@@ -16,7 +16,10 @@
 - Phase 0: docs kit added.
 - Phase 1.1: spec review done → docs/plans/phase-1-review.md (10 issues: stored due
   state vs P1, reversal semantics, cycle-boundary rules, rounding decision #8).
+- Phase 1.2: schema design → docs/design/schema.sql (enums, tables+CHECKs,
+  indexes, append-only triggers on ledger_entry/party, skeleton due, RATE_CHANGE
+  new_rate, allocation as regenerable cache). DECISIONS.md still open.
 
 ## Next step
 Owner answers DECISIONS.md (#1, #3, #8, #9, #10 minimum), then patch docs
-02/03/04 with review resolutions and design schema + engine interfaces.
+02/03/04 with review resolutions and design engine interfaces.
