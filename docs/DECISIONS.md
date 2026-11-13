@@ -1,27 +1,21 @@
-# Decisions (owner fills these in BEFORE Phase 1)
+# Decisions — Loan Tracker v1
 
-Replace each "DEFAULT" with your answer, or keep the default.
+1. **Interest styles:** Monthly simple interest only in v1. EMI and compound interest deferred to v2.
 
-1. Interest styles in v1: DEFAULT = monthly simple only. EMI/compound in v2.
-   Answer:
-2. Unpaid interest: DEFAULT = stays pending (no compounding).
-   Answer:
-3. Late penalty: DEFAULT = none in v1; schema supports it (penalty_rule).
-   Do people you borrow from charge penalties?
-   Answer:
-4. Partial principal repayment any day, interest recalculated from that day: DEFAULT = yes.
-   Answer:
-5. Funding mapping: DEFAULT = exact funding_link per loan (pool view can be derived later).
-   Answer:
-6. Users: DEFAULT = owner only in v1.
-   Answer:
-7. Default book for a new loan: DEFAULT = must choose (no default).
-   Cross-book funding needs explicit confirmation: DEFAULT = yes.
-   Answer:
-8. Rounding of a due: DEFAULT = to the paisa (half-up). Alternative: whole rupee.
-   Answer:
-9. Grace days default: DEFAULT = 3.
-   Answer:
-10. Day-count default for PER_MONTH loans: DEFAULT = monthly flat, partial months pro-rated by
-    actual days in that calendar month.
-    Answer:
+2. **Unpaid interest:** Unpaid interest remains pending and does not compound.
+
+3. **Late penalty:** No late penalties in v1. Keep the schema extensible through `penalty_rule` for future implementation.
+
+4. **Partial principal repayment:** Yes. Allow partial principal repayment on any date. Recalculate future interest from the effective repayment date based on the remaining principal.
+
+5. **Funding mapping:** Maintain an exact `funding_link` for each loan. Pool-level funding views can be derived later.
+
+6. **Users:** Owner-only access in v1. Multi-user support deferred to a future version.
+
+7. **Default book:** A book must be explicitly selected when creating a new loan. Cross-book funding requires explicit confirmation.
+
+8. **Rounding:** Round final due amounts to two decimal places (paisa) using the half-up rounding method. Avoid rounding intermediate calculations unnecessarily.
+
+9. **Grace days:** Default grace period is 3 calendar days. The original due date remains unchanged.
+
+10. **Day-count convention:** For PER_MONTH loans, use monthly flat interest. Prorate partial months using actual elapsed days divided by the actual number of calendar days in that month.
