@@ -31,9 +31,31 @@
   schema: reverses_id on REVERSAL (UNIQUE, NOT NULL check), reminder_log
   keyed by (loan_id, due_date), party delete-only guard; 02/03/04/05
   re-aligned; payoff rule (closing due) added to the waterfall.
+- 04.3 patched per review 2.1: dues = immutable skeletons; paid/waived/penalty
+  + status are engine outputs (WAIVED-before-PAID order), never stored.
+
+## Log (cont.)
+- Phase 2.1: pyproject (dev extras = pytest+hypothesis only, venv),
+  engine/types.py (frozen dataclasses, engine.md §1), money.py
+  (round_half_up, the only rounding primitive), calendar.py
+  (days_in_month, clamp_due_day, cycle_boundaries: MONTHLY strictly-after,
+  QUARTERLY per #14, AT_MATURITY lump-then-monthly per #12), tests/engine/
+  test_basics.py — 15 tests, pinned 2026. Suite green.
+- Note: `pip install -e .` regenerates loan_tracker.egg-info/ at repo root
+  (now gitignored); use .venv for pytest.
+
+## Log (cont.)
+- Phase 2.2: engine/accrual.py (net_rate, _segments, generate_dues,
+  open_period, projected_due, accrue) per engine.md §3.1/§4; types.py
+  + Segment/AccrualResult. Principal fed via PrincipalTimeline arg for
+  now (2.3's waterfall derives it; pinned §2 signature re-converges then).
+  Payoff rule: zero-timeline mid-period realizes a closing due, no dues
+  after P=0. Clamped due_day periods pro-rate across month edges
+  (period = [b_{k-1}, b_k-1], NOT calendar months) — pinned in tests.
+  test_accrual.py: 20 tests; suite green (35 total).
 
 ## Next step
-Phase 2.1: implement loan_tracker/engine/ (pure, no I/O) per
-docs/design/engine.md — dataclasses + round_half_up + cycle_boundaries,
-write tests first (05 examples A-C + §5.3 edge cases, pinned 2026 paise
-values), run `pytest -q -x --tb=short`.
+Phase 2.3: waterfall per docs/design/engine.md §3.2 (WaterfallState,
+allocate_payment, allocate_all, compute_balances, compute) with §5.3
+edge tests incl. Example A payments, reversal, overpayment credit;
+run `pytest -q -x --tb=short`.

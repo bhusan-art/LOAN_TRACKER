@@ -35,9 +35,16 @@ For each PAYMENT in date order:
 Written as allocation rows. Overpayment beyond full payoff = credit, flagged.
 
 ## 4.3 Due generation (daily job)
-For every ACTIVE loan whose cycle ended on/before today, create the due row if missing (idempotent).
-Status: PAID (paid = interest) / PARTIAL (0 < paid < interest, before due_date + grace)
-/ OVERDUE (unpaid after due_date + grace_days) / UPCOMING (future).
+Due rows are immutable skeletons (review 2.1): the job creates one per cycle
+when it ends, and per mid-cycle payoff (closing due); the unique
+(loan_id, period_start) index keeps re-runs idempotent. paid/waived/penalty
+paise and status are NEVER stored — the engine derives them on read for any
+as-of date (pinned in docs/design/engine.md):
+
+UPCOMING (due_date > as_of) → WAIVED (waived >= interest + penalty) →
+PAID (paid + waived >= interest + penalty) → OVERDUE (as_of > due_date +
+grace_days) → else PARTIAL (includes 0 paid inside grace). WAIVED is checked
+before PAID so it is reachable; overdue_days count starts after grace.
 Aging buckets: 0-30, 31-60, 61-90, 90+ days.
 
 ## 4.4 Penalty (if enabled)
