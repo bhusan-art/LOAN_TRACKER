@@ -19,7 +19,11 @@
 - Phase 1.2: schema design → docs/design/schema.sql (enums, tables+CHECKs,
   indexes, append-only triggers on ledger_entry/party, skeleton due, RATE_CHANGE
   new_rate, allocation as regenerable cache). DECISIONS.md still open.
+- Phase 1.3: API design -> docs/design/api.md (endpoint tables w/ ?book=,
+  daily job 8 steps with per-step idempotency rules, 6-screen mapping).
 
 ## Next step
 Owner answers DECISIONS.md (#1, #3, #8, #9, #10 minimum), then patch docs
 02/03/04 with review resolutions and design engine interfaces.
+API design (docs/design/api.md) delivered with daily-job steps and screen
+mapping; awaiting owner decision #8 (rounding unit) to freeze report fields.
