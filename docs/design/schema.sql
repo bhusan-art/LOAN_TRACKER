@@ -111,6 +111,7 @@ CREATE TABLE ledger_entry (
   -- reverses_id is required on a REVERSAL and null otherwise; UNIQUE so one
   -- original is reversed at most once (NULLs are distinct, so non-reversals pass)
   CHECK (type = 'REVERSAL' OR reverses_id IS NULL),
+  CHECK (type <> 'REVERSAL' OR reverses_id IS NOT NULL),
   UNIQUE (reverses_id)
 );
 

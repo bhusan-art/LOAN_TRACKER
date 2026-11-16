@@ -420,6 +420,9 @@ open period (#11 — the in-progress tail, for payoff/display only, never stored
     next boundary b_{n+1}; open period = [b_n, as_of - 1]
     open_period_paise = round_half_up(sum(segment interest over [b_n, as_of - 1] at current P & rate))
     open_period_paise = 0 when as_of is a boundary OR principal is fully repaid
+    if the loan is paid off mid-period (PAYMENT >= payoff_today on its entry_date),
+    the open period is realized as a CLOSING DUE with due_date = entry_date
+    (payoff rule, §3.2); no dues are generated after principal reaches 0
 
 projected due (review 2.3, the open tail; INFORMATIONAL, not in accrued/payoff):
     next period P* = [b_n, b_{n+1} - 1] with b_{n+1} the next boundary after as_of
@@ -453,8 +456,12 @@ allocate_all(terms, live_entries, as_of):
                        (dedup rule, review 2.7: at most one PENALTY per (loan, cycle, rule bucket) —
                         job enforces before insert; engine just sums)
     PAYMENT:           pool = amount    (no PRINCIPAL_PREPAY type, #13)
+        0. payoff rule: if pool >= payoff_today(entry_date), first realize a
+           CLOSING DUE for [b_n, entry_date - 1] (due_date = entry_date) at the
+           open-period amount on that date; it joins due_index as the newest
+           due. No dues are generated after principal reaches 0.
         1. penalty, oldest cycle first:      take = min(pool, penalty_outstanding[c]); rows += (entry, None, PENALTY, take)
-        2. interest dues, oldest due_date first:
+        2. interest dues, oldest due_date first (includes the closing due when realized):
            for due in due_index (only those with due_date <= entry_date):
                take = min(pool, due.interest - paid - waived + penalty_of(due))
                rows += (entry, due.period_start, INTEREST, take); state.due_paid[due.period_start] += take_interest_part
@@ -484,6 +491,12 @@ Mar due 200_000 p: INTEREST 200_000 p (Mar now PAID); pool left
 (period [1 Jan, 31 Jan], due 1 Feb) is realized at 5 Feb. No penalty →
 INTEREST 150_000 p to the Feb due; pool 0. Feb due now PARTIAL, 50_000 p
 outstanding. ✓
+
+**Payoff rule worked check — mid-cycle payoff on 15 Apr 2026 (§5.3):**
+pool 10_493_333 p >= payoff_today → a closing due [1 Apr, 14 Apr]
+(due_date 15 Apr) at 93_333 p is realized first; waterfall: INTEREST
+200_000 (Feb) + 200_000 (Mar) + 93_333 (closing due), PRINCIPAL 10_000_000,
+pool 0, credit 0. No dues after principal = 0; loan CLOSED.
 
 ---
 
@@ -578,7 +591,7 @@ Single rounding unit = paise, half-up (#8).
 | Apr due `interest_paise` | 167_097 |
 | accrued to 1 Apr | 567_097 |
 | interest outstanding | 167_097 |
-| payoff_today (7_000_000 principal + 167_097 outstd + 0 open) | 71_67_097 |
+| payoff_today (7_000_000 principal + 167_097 outstd + 0 open) | 7_167_097 |
 
 (Single canonical column — the whole-rupee alternative was dropped with #8.)
 
@@ -613,16 +626,22 @@ Single rounding unit = paise, half-up (#8).
     [1 Feb, 14 Feb] = 14 days @2%: 10_000_000 × 2/100 × 14/28 = 100_000 p
     [15 Feb, 28 Feb] = 14 days @3%: 10_000_000 × 3/100 × 14/28 = 150_000 p
     Mar due = **250_000 p** (₹2,500). Two segments, one per rate cell.
-- **test_short_first_period** — start 20 Jan, due_day 5: first boundary
-  5 Feb; period [20 Jan, 4 Feb] = 12 days in January + 4 in February,
-  interest = P×r/100×(12/31 + 4/28) (two segments, one per calendar month).
+- **test_short_first_period** — GIVEN 10_000_000 p (₹1,00,000), 2%/month,
+  start **20 Jan 2026**, due_day 5: first boundary 5 Feb; period
+  [20 Jan, 4 Feb] = 12 days in January + 4 in February:
+  10_000_000×2/100×12/31 = 7_741.94 p + 10_000_000×2/100×4/28 =
+  28_571.43 p → 36_313.37 → **36_313 p** (due 5 Feb 2026; two segments,
+  one per calendar month).
 - **test_mid_cycle_payoff** (#11) — GIVEN 10_000_000 p on 1 Jan 2026,
   2%/month, due_day 1, NO payments; owner pays off on **15 Apr 2026**.
   Realized dues: Feb 200_000 + Mar 200_000 = 400_000. Open period
   [1 Apr, 14 Apr] = 14 days at 10_000_000: 200_000 × 14/30 = 93_333.33 →
   **93_333 p**. `payoff_today` = 10_000_000 principal + 400_000 realized
   outstd + 93_333 open + 0 = **10_493_333 p** (₹1,04,933.33). A PAYMENT of
-  exactly that clears the loan to CLOSED, principal 0, credit 0.
+  exactly that: payoff rule realizes a closing due (93_333 p) first, then
+  allocations = INTEREST 200_000 (Feb) + 200_000 (Mar) + 93_333 (closing),
+  PRINCIPAL 10_000_000, pool 0, credit 0. No dues after principal = 0;
+  status **CLOSED**.
 - **test_post_maturity_accrual** (#12) — GIVEN 10_000_000 p on 1 Jan 2026,
   2%/month, due_day 1, **maturity_date 1 May**, NO payments. Cycles keep
   generating after maturity: Feb–May dues each 200_000 p, and a post-maturity
@@ -633,11 +652,16 @@ Single rounding unit = paise, half-up (#8).
 - **test_taken_dues_symmetry** (review 2.9) — identical terms/dates flipped to
   TAKEN: same dues/allocation numbers; TAKEN OVERDUE flag surfaces to pay
   alerts, unmuted.
-- **test_quarterly_cycle** — boundaries every 3rd month; due = sum of three
-  monthly pro-rations (or full `3 × P × r/100` when whole months).
-- **test_at_maturity_single_due** — AT_MATURITY: one lump due at
-  `maturity_date`; thereafter open-ended monthly accrual on the unpaid
-  balance (#12).
+- **test_quarterly_cycle** — GIVEN 10_000_000 p on 1 Jan 2026, 2%/month,
+  due_day 1, QUARTERLY, NO payments. Boundaries: b_1 = 1 Feb, then every
+  3 months (1 May, 1 Aug). Dues: 1 Feb = [1 Jan, 31 Jan] = **200_000 p**;
+  1 May = [1 Feb, 30 Apr] = 200_000 + 200_000 + 200_000 (whole months;
+  Feb 28/28) = **600_000 p**. accrued to 1 May 2026 = **800_000 p**.
+- **test_at_maturity_single_due** — GIVEN 10_000_000 p on 1 Jan 2026,
+  2%/month, due_day 1, AT_MATURITY, maturity_date **1 Apr 2026**, NO
+  payments. Single lump due [1 Jan, 31 Mar] = 200_000 × 3 =
+  **600_000 p** due 1 Apr; status MATURED. Afterwards (#12): monthly dues
+  continue on the unpaid balance — 1 May due = **200_000 p**, etc.
 - **test_property_recompute_invariance** (hypothesis, P1) — for random entry
   lists and `d1 < d2`: `compute(..., d1).dues` restricted to due_date <= d1
   equals `compute(..., d2).dues` restricted likewise, and due `interest_paise`

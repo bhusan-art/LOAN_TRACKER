@@ -26,28 +26,28 @@ computed by the engine on read (P1) — never stored.
 | Method | Path | Purpose | R | Resp |
 |---|---|---|---|---|
 | GET | /api/loans | List loans | `book`, `direction`, `status`, `party_id` | `[]` {id, party_name, direction, book, status, principal_outstanding_paise, payoff_today_paise, next_due_date} |
-| GET | /api/loans/{id} | Loan detail | `as_of` (optional date) | terms, status, engine balances {principal_outstanding, interest_accrued, interest_paid, interest_outstanding, penalty_outstanding, credit_paise, payoff_today} all paise, dues[] {due_id, period, due_date, interest_paise, paid, status (derived), outstanding_paise, overdue_days}, projected_due, funding_links[] {taken_loan_id, amount, cross_book} |
+| GET | /api/loans/{id} | Loan detail | `as_of` (optional date) | terms, status, engine balances {principal_outstanding, interest_accrued, interest_paid, interest_outstanding, penalty_outstanding, credit_paise, payoff_today} all paise, dues[] {(loan_id, due_date) key, period_start, due_date, interest_paise, paid, status (derived), outstanding_paise, overdue_days}, projected_due, funding_links[] {taken_loan_id, amount, cross_book} |
 | POST | /api/loans | Create loan (terms only; first DISBURSE entry auto-posted) | `party_id`, `direction`, `book` (required, DECISIONS #7), `principal_paise`, `start_date`, `rate`, `rate_unit`, `interest_type` (SIMPLE in v1), `interest_cycle`, `due_day` (1–31), `grace_days` (default 3), `tenure_months`?, `maturity_date`?, `collateral`?, `purpose`? | loan {id} |
 | POST | /api/loans/{id}/fund | Link borrowed → given money | `taken_loan_id`, `given_loan_id`, `amount_paise`, `link_date`, `confirm_cross_book` (true when books differ, DECISIONS #7) | funding_link {id} |
 
 ### Ledger (append-only; corrections are REVERSALs — P2)
 | Method | Path | Purpose | R | Resp |
 |---|---|---|---|---|
-| GET | /api/loans/{id}/entries | Ledger, newest first | `as_of`? | `[]` {id, entry_date, type, amount_paise, payment_mode, reference, note, new_rate?, reversed_by_id} |
-| POST | /api/loans/{id}/entries | Record an event: PAYMENT, TOPUP, PRINCIPAL_PREPAY, WAIVER, RATE_CHANGE | `type`, `entry_date` (default today), `amount_paise`?, `payment_mode`?, `reference`?, `note`?, `new_rate`? (RATE_CHANGE) | entry {id} + `allocations[]` {due_id, bucket, amount_paise} (waterfall, P5; written same transaction) |
+| GET | /api/loans/{id}/entries | Ledger, newest first | `as_of`? | `[]` {id, entry_date, type, amount_paise, payment_mode, reference, note, new_rate?, reverses_id} |
+| POST | /api/loans/{id}/entries | Record an event: PAYMENT, TOPUP, WAIVER, RATE_CHANGE (no PRINCIPAL_PREPAY, #13 — principal reduction is the PRINCIPAL bucket of a PAYMENT) | `type`, `entry_date` (default today), `amount_paise`?, `payment_mode`?, `reference`?, `note`?, `new_rate`? (RATE_CHANGE) | entry {id} + `allocations[]` {due_period_start (nullable), bucket, amount_paise} (waterfall, P5; written same transaction) |
 | POST | /api/entries/{id}/reverse | Post a REVERSAL for entry id (never edit/delete) | `note`? | reversal {id} |
 
 ### Dues & calendar
 | Method | Path | Purpose | R | Resp |
 |---|---|---|---|---|
-| GET | /api/dues | Dues list | `book`, `from`, `to`?, `status`? (derived filter), `direction`? | `[]` {due_id, loan_id, party, direction, period, due_date, interest_paise, paid_paise, status, overdue_days, outstanding_paise} |
+| GET | /api/dues | Dues list | `book`, `from`, `to`?, `status`? (derived filter), `direction`? | `[]` {(loan_id, due_date) key, party, direction, period_start, due_date, interest_paise, paid_paise, status, overdue_days, outstanding_paise} |
 | GET | /api/calendar | Cash calendar 30/60/90 | `book`, `days` (30/60/90) | per day: `in_paise` (GIVEN dues due that day), `out_paise` (TAKEN dues due that day), `running_balance_paise`, `negative` flag |
 
 ### Reminders
 | Method | Path | Purpose | R | Resp |
 |---|---|---|---|---|
-| GET | /api/reminders | Today's reminder queue (digest preview) | `book`? | `[]` {due_id, kind (REMINDER/OVERDUE/PAY_ALERT), direction, tag ([BIZ]/[PER]), message} |
-| POST | /api/reminders/send | Send now (manual override of the digest) | `due_ids[]`?, `channel` (telegram/email) | {sent, failed[]} — logged to reminder_log |
+| GET | /api/reminders | Today's reminder queue (digest preview) | `book`? | `[]` {(loan_id, due_date), kind (REMINDER/OVERDUE/PAY_ALERT), direction, tag ([BIZ]/[PER]), message} |
+| POST | /api/reminders/send | Send now (manual override of the digest) | `reminders[]` {(loan_id, due_date, kind)}?, `channel` (telegram/email) | {sent, failed[]} — logged to reminder_log; dedupe = UNIQUE (loan_id, due_date, kind, channel, sent_on) |
 
 ### Reports & export
 | Method | Path | Purpose | R | Resp |
@@ -75,11 +75,11 @@ re-run on the same date (01-overview NFR).
 | # | Step | Idempotency rule |
 |---|---|---|
 | 1 | Due generation: for every loan (both directions) whose cycle ended on/before today, INSERT skeleton `due` row (review 2.1: interest_paise rounded once at generation, immutable) | `UNIQUE (loan_id, period_start)` — re-run is a no-op; never UPDATE a skeleton |
-| 2 | Cross-check each realized due against engine value (engine.md §3.2); on drift raise DueInconsistency, mark step failed, alert owner | Read-only; safe to re-run |
+| 2 | Due cross-check: each skeleton's interest_paise is the engine value at generation (engine.md §3.1); re-generating a missing realized due uses the same formula, so no drift is possible. Read-only check; safe to re-run | Read-only; safe to re-run |
 | 3 | Allocation rebuild: for loans whose ledger changed since last rebuild (new/reversed entries), atomically replace their `allocation` rows (P2 does not apply to allocation — regenerable cache) | Replace-in-transaction keyed on max ledger_entry id per loan; re-run produces identical rows (pure engine) |
 | 4 | Penalty posting (OFF in v1, DECISIONS #3): if enabled, post at most one PENALTY per (loan, cycle, bucket) | Guard: no PENALTY row exists for that (loan, period_start) — check before insert |
 | 5 | Status + lifecycle refresh: compute per-loan derived status (ACTIVE/OVERDUE/…) and update only `loan.status` (P1: never store due status; status is an engine output — loan.status is the maintained exception) | SET-based, deterministic from inputs; re-run writes same values |
-| 6 | Reminder digest: build pay → collect → warnings lines, [BIZ]/[PR] tags, from: 3-days-before (REMINDER), due-date (PAY_ALERT, TAKEN flagged on due_date itself — review 2.9), overdue (OVERDUE), maturity-30d, monthly summary (1st) | `reminder_log` unique index `(due_id, kind, sent_at::date)` — one of a kind per due per day; TAKEN payables never muted |
+| 6 | Reminder digest: build pay → collect → warnings lines, [BIZ]/[PER] tags, from: 3-days-before (REMINDER, keyed by the projected due's (loan_id, due_date) — no `due` row exists yet), due-date (PAY_ALERT, TAKEN flagged on due_date itself — review 2.9), overdue (OVERDUE), maturity-30d, monthly summary (1st) | `reminder_log` UNIQUE (loan_id, due_date, kind, channel, sent_on) — one of a kind per loan + due_date + channel per day; TAKEN payables never muted |
 | 7 | Send digest + urgent alerts (Telegram primary, email backup); log every send, retry failures once | Sends gated by step-6 inserts (INSERT … ON CONFLICT DO NOTHING), so re-run sends nothing new |
 | 8 | Record run: job_last_run row + observability stamp | Single upsert on run date — later run overwrites, re-run of same date is no-op |
 
