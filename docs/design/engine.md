@@ -629,8 +629,8 @@ Single rounding unit = paise, half-up (#8).
 - **test_short_first_period** — GIVEN 10_000_000 p (₹1,00,000), 2%/month,
   start **20 Jan 2026**, due_day 5: first boundary 5 Feb; period
   [20 Jan, 4 Feb] = 12 days in January + 4 in February:
-  10_000_000×2/100×12/31 = 7_741.94 p + 10_000_000×2/100×4/28 =
-  28_571.43 p → 36_313.37 → **36_313 p** (due 5 Feb 2026; two segments,
+  10_000_000×2/100×12/31 = 7_7419.35 p + 10_000_000×2/100×4/28 =
+  28_571.43 p → 105_990.78 → **105_991 p** (due 5 Feb 2026; two segments,
   one per calendar month).
 - **test_mid_cycle_payoff** (#11) — GIVEN 10_000_000 p on 1 Jan 2026,
   2%/month, due_day 1, NO payments; owner pays off on **15 Apr 2026**.

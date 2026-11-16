@@ -14,7 +14,7 @@ computed by the engine on read (P1) — never stored.
 ### Dashboard
 | Method | Path | Purpose | R | Resp |
 |---|---|---|---|---|
-| GET | /api/dashboard | Home metrics + today lists | `book` | totals: `lent_out_paise` (GIVEN principal outstanding), `borrowed_paise` (TAKEN), `own_capital_deployed_paise` (lent − funding-linked), `interest_earned_paise` {month, fy, lifetime} GIVEN, `interest_cost_paise` same periods TAKEN, `net_interest_income_paise`, `collected_vs_pending_paise` GIVEN, `overdue` {count, amount_paise, aging{0_30,31_60,61_90,90_plus}} both directions, `effective_yield_bps`, `idle_cost_paise_per_cycle`, `concentration[]` {party, share_pct, flagged>25}; today: `pay_today[]`, `collect_today[]` {due_id, party, amount_paise}; `warnings[]` (04.8 flags) |
+| GET | /api/dashboard | Home metrics + today lists | `book` | totals: `lent_out_paise` (GIVEN principal outstanding), `borrowed_paise` (TAKEN), `own_capital_deployed_paise` (lent − funding-linked), `interest_earned_paise` {month, fy, lifetime} GIVEN, `interest_cost_paise` same periods TAKEN, `net_interest_income_paise`, `collected_vs_pending_paise` GIVEN, `overdue` {count, amount_paise, aging{0_30,31_60,61_90,90_plus}} both directions, `effective_yield_bps`, `idle_cost_paise_per_cycle`, `concentration[]` {party, share_pct, flagged>25}; today: `pay_today[]`, `collect_today[]` {loan_id, due_date, party, amount_paise}; `warnings[]` (04.8 flags) |
 
 ### Parties
 | Method | Path | Purpose | R | Resp |

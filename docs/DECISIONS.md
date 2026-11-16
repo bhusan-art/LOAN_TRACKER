@@ -25,3 +25,5 @@
 12. After maturity: interest keeps accruing monthly on unpaid principal until repaid; status MATURED + overdue flags.
 
 13. PRINCIPAL_PREPAY entry type removed; every payment goes through the waterfall (penalty -> interest -> principal).
+
+14. QUARTERLY / every-N-months cycles: first due = first clamped due_day occurrence on or after start_date + 3 months (start 1 Jan, due_day 1 -> 1 Apr, 1 Jul, ...). Monthly loans unchanged.
