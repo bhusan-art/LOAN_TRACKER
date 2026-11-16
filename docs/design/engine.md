@@ -536,7 +536,7 @@ pool 0, credit 0. No dues after principal = 0; loan CLOSED.
   occurrence STRICTLY AFTER `start_date` (Example A: start 1 Jan, due_day 1 →
   first due 1 Feb; this refines review 2.5's "on/after" — the example is
   authoritative), `b_{k+1}` = next clamped occurrence per `interest_cycle`
-  (MONTHLY: each month; QUARTERLY: every 3rd month from `b_1`; AT_MATURITY: a
+  (MONTHLY: each month; QUARTERLY: `b_1` = first clamped occurrence on/after start_date + 3 months, then every 3rd month (DECISIONS #14); AT_MATURITY: a
   single lump due at `maturity_date`, then open-ended monthly accrual on the
   unpaid balance per #12).
 - **Period `k` accrues on `[b_{k-1}, b_k - 1]`** inclusive (`b_0 = start_date - 1`);
@@ -629,7 +629,7 @@ Single rounding unit = paise, half-up (#8).
 - **test_short_first_period** — GIVEN 10_000_000 p (₹1,00,000), 2%/month,
   start **20 Jan 2026**, due_day 5: first boundary 5 Feb; period
   [20 Jan, 4 Feb] = 12 days in January + 4 in February:
-  10_000_000×2/100×12/31 = 7_7419.35 p + 10_000_000×2/100×4/28 =
+  10_000_000×2/100×12/31 = 77_419.35 p + 10_000_000×2/100×4/28 =
   28_571.43 p → 105_990.78 → **105_991 p** (due 5 Feb 2026; two segments,
   one per calendar month).
 - **test_mid_cycle_payoff** (#11) — GIVEN 10_000_000 p on 1 Jan 2026,
@@ -652,11 +652,10 @@ Single rounding unit = paise, half-up (#8).
 - **test_taken_dues_symmetry** (review 2.9) — identical terms/dates flipped to
   TAKEN: same dues/allocation numbers; TAKEN OVERDUE flag surfaces to pay
   alerts, unmuted.
-- **test_quarterly_cycle** — GIVEN 10_000_000 p on 1 Jan 2026, 2%/month,
-  due_day 1, QUARTERLY, NO payments. Boundaries: b_1 = 1 Feb, then every
-  3 months (1 May, 1 Aug). Dues: 1 Feb = [1 Jan, 31 Jan] = **200_000 p**;
-  1 May = [1 Feb, 30 Apr] = 200_000 + 200_000 + 200_000 (whole months;
-  Feb 28/28) = **600_000 p**. accrued to 1 May 2026 = **800_000 p**.
+- **test_quarterly_cycle** (#14) — GIVEN 10_000_000 p on 1 Jan 2026, 2%/month,
+  due_day 1, QUARTERLY, NO payments. Boundaries: b_1 = 1 Apr, then 1 Jul, 1 Oct.
+  Dues: 1 Apr = [1 Jan, 31 Mar] = **600_000 p**; 1 Jul = [1 Apr, 30 Jun] =
+  **600_000 p**. accrued to 1 Jul 2026 = **1_200_000 p**.
 - **test_at_maturity_single_due** — GIVEN 10_000_000 p on 1 Jan 2026,
   2%/month, due_day 1, AT_MATURITY, maturity_date **1 Apr 2026**, NO
   payments. Single lump due [1 Jan, 31 Mar] = 200_000 × 3 =

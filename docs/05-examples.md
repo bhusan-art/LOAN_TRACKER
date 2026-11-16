@@ -49,11 +49,10 @@ income.
 ## Edge cases to test (full list + exact values: engine.md §5.3)
 - Leap year (29 Feb)
 - due_day = 31 in a 30-day month (and February)
-- Short first period (start 20 Jan, due 5th -> 36_313 p due 5 Feb)
+- Short first period (start 20 Jan, due 5th -> 105_991 p due 5 Feb)
 - Payment on the disbursement day (a PAYMENT; no PRINCIPAL_PREPAY type, #13)
 - REVERSAL of an old payment (15 Mar -> INTEREST 200_000 + 200_000,
   PRINCIPAL 2_850_000, principal 7_150_000, Apr due 168_742)
 - Payment larger than full payoff (credit, withdrawable, never forfeited)
 - Rate change mid-cycle (Mar due 250_000 p)
-- Quarterly cycle (1 May due 600_000 p) and AT_MATURITY single due
-  (1 Apr due 600_000 p, then monthly)
+- Quarterly cycle (1 Apr and 1 Jul dues 600_000 p each) and AT_MATURITY single due (1 Apr due 600_000 p, then monthly)
