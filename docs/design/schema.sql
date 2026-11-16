@@ -5,8 +5,9 @@
 --   * Rounding is an engine concern only (DECISIONS #8: paise, half-up) — nothing
 --     in the schema depends on a rounding unit.
 --   * P1/P2: ledger_entry is append-only, enforced at DB level (triggers, end of
---     file). Corrections are REVERSAL pairs; the original entry gets
---     reversed_by_id. party rows are append-only too.
+--     file). Corrections are REVERSAL pairs: a REVERSAL row carries reverses_id
+--     pointing at the original (set at insert; UNIQUE so an entry is reversed at
+--     most once). party rows block DELETE only (they allow UPDATE; see triggers).
 --   * due rows are IMMUTABLE SKELETONS (review 2.1): created once by the daily
 --     job when a cycle ends; paid/waived/penalty/status are engine outputs
 --     computed per as-of date and are NOT stored. due_status below is the
@@ -26,7 +27,7 @@ CREATE TYPE loan_status       AS ENUM ('ACTIVE', 'OVERDUE', 'MATURED', 'CLOSED',
 CREATE TYPE rate_unit         AS ENUM ('PER_MONTH', 'PER_YEAR');
 CREATE TYPE interest_type     AS ENUM ('SIMPLE', 'COMPOUND', 'EMI');      -- v1 engine supports SIMPLE only (DECISIONS #1)
 CREATE TYPE interest_cycle    AS ENUM ('MONTHLY', 'QUARTERLY', 'AT_MATURITY');
-CREATE TYPE entry_type        AS ENUM ('DISBURSE', 'TOPUP', 'PAYMENT', 'PRINCIPAL_PREPAY',
+CREATE TYPE entry_type        AS ENUM ('DISBURSE', 'TOPUP', 'PAYMENT',
                                        'WAIVER', 'PENALTY', 'RATE_CHANGE', 'CAPITALISE', 'REVERSAL');
 CREATE TYPE payment_mode      AS ENUM ('CASH', 'UPI', 'BANK');
 CREATE TYPE allocation_bucket AS ENUM ('PENALTY', 'INTEREST', 'PRINCIPAL');
@@ -39,7 +40,8 @@ CREATE TYPE channel_type      AS ENUM ('TELEGRAM', 'EMAIL');
 -- =====================================================================
 
 -- party: anyone the owner lends to or borrows from; a person can be on both
--- sides. Append-only (no UPDATE/DELETE trigger).
+-- sides. DELETE is blocked (trigger below) but UPDATE is allowed so the owner
+-- can correct contact fields; the identity row is never deleted.
 CREATE TABLE party (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   name          text NOT NULL,
@@ -79,9 +81,11 @@ CREATE TABLE loan (
 );
 
 -- ledger_entry: append-only EVENTS (P1). Money types carry a positive paise
--- amount; RATE_CHANGE carries new_rate; REVERSAL points at the original
--- (and the original gets reversed_by_id). Penalty dedupe ("at most one per
--- (loan, cycle, bucket)") is enforced by the daily job, not the DB.
+-- amount; RATE_CHANGE carries new_rate; a REVERSAL row carries reverses_id
+-- pointing at the original (set at insert; UNIQUE, so an entry is reversed at
+-- most once). There is no PRINCIPAL_PREPAY type (DECISIONS #13) — principal
+-- reduction is the PRINCIPAL bucket of a PAYMENT. Penalty dedupe ("at most one
+-- per (loan, cycle, bucket)") is enforced by the daily job, not the DB.
 CREATE TABLE ledger_entry (
   id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   loan_id        bigint NOT NULL REFERENCES loan (id),
@@ -92,11 +96,11 @@ CREATE TABLE ledger_entry (
   reference      text,
   note           text,
   new_rate       numeric(7,4),
-  reversed_by_id bigint REFERENCES ledger_entry (id),
+  reverses_id    bigint REFERENCES ledger_entry (id),   -- set on a REVERSAL row: the entry it cancels
   created_at     timestamptz NOT NULL DEFAULT now(),
 
   -- money-bearing types must have a positive paise amount
-  CHECK (type NOT IN ('DISBURSE', 'TOPUP', 'PAYMENT', 'PRINCIPAL_PREPAY', 'PENALTY', 'CAPITALISE')
+  CHECK (type NOT IN ('DISBURSE', 'TOPUP', 'PAYMENT', 'PENALTY', 'CAPITALISE')
          OR (amount_paise IS NOT NULL AND amount_paise > 0)),
   -- non-monetary types must not carry an amount
   CHECK (type NOT IN ('RATE_CHANGE', 'REVERSAL') OR amount_paise IS NULL),
@@ -104,8 +108,10 @@ CREATE TABLE ledger_entry (
   CHECK (type <> 'WAIVER' OR amount_paise IS NULL OR amount_paise > 0),
   -- only RATE_CHANGE carries a rate
   CHECK (new_rate IS NULL OR (type = 'RATE_CHANGE' AND new_rate >= 0)),
-  -- a REVERSAL entry itself is never reversed
-  CHECK (reversed_by_id IS NULL OR type <> 'REVERSAL')
+  -- reverses_id is required on a REVERSAL and null otherwise; UNIQUE so one
+  -- original is reversed at most once (NULLs are distinct, so non-reversals pass)
+  CHECK (type = 'REVERSAL' OR reverses_id IS NULL),
+  UNIQUE (reverses_id)
 );
 
 -- due: one IMMUTABLE skeleton row per interest cycle (review 2.1). Created
@@ -126,13 +132,14 @@ CREATE TABLE due (
 );
 
 -- allocation: how each money-bearing entry was split by the fixed waterfall
--- (P5). DUE_ID is null for PRINCIPAL_PREPAY and for the PENALTY bucket.
--- This table is a regenerable cache: the job replaces a loan's rows
--- atomically when its ledger changes (P2 does not apply here).
+-- (P5). DUE_PERIOD_START (nullable) references a due by (loan, period_start);
+-- it is null for the PRINCIPAL bucket and for the PENALTY bucket. This table
+-- is a regenerable cache: the job replaces a loan's rows atomically when its
+-- ledger changes (P2 does not apply here).
 CREATE TABLE allocation (
   id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   ledger_entry_id bigint NOT NULL REFERENCES ledger_entry (id),
-  due_id          bigint REFERENCES due (id),
+  due_period_start date,                                -- which interest due the INTEREST bucket paid
   bucket          allocation_bucket NOT NULL,
   amount_paise    bigint NOT NULL CHECK (amount_paise > 0)
 );
@@ -150,14 +157,19 @@ CREATE TABLE funding_link (
   UNIQUE (taken_loan_id, given_loan_id, link_date)
 );
 
--- reminder_log: what was sent about which due, so reminders never duplicate
--- (one of the same kind for the same due per day — unique expression index).
+-- reminder_log: what was sent about which loan + due date, so reminders never
+-- duplicate. Keyed by (loan_id, due_date) rather than a due row id: projected
+-- dues (review 2.3) have no `due` row yet when their "3 days before" reminder
+-- fires. sent_on is the dedupe calendar day; sent_at is the actual send time.
 CREATE TABLE reminder_log (
-  id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  due_id  bigint NOT NULL REFERENCES due (id),
-  kind    reminder_kind NOT NULL,
-  channel channel_type  NOT NULL,
-  sent_at timestamptz NOT NULL DEFAULT now()
+  id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  loan_id  bigint NOT NULL REFERENCES loan (id),
+  due_date date NOT NULL,
+  kind     reminder_kind NOT NULL,
+  channel  channel_type  NOT NULL,
+  sent_on  date NOT NULL,
+  sent_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (loan_id, due_date, kind, channel, sent_on)
 );
 
 -- =====================================================================
@@ -169,13 +181,16 @@ CREATE INDEX ix_loan_book_direction_status ON loan (book, direction, status);
 CREATE INDEX ix_allocation_entry ON allocation (ledger_entry_id);
 CREATE INDEX ix_funding_given ON funding_link (given_loan_id);
 CREATE INDEX ix_funding_taken ON funding_link (taken_loan_id);
-CREATE INDEX ix_reminder_due ON reminder_log (due_id);
--- dedupe guard: same kind + due, once per day
-CREATE UNIQUE INDEX ix_reminder_daily ON reminder_log (due_id, kind, (sent_at::date));
+-- reminder dedupe (same loan + due_date + kind + channel, once per day) is the
+-- UNIQUE constraint inline on reminder_log; a plain index helps date scans
+CREATE INDEX ix_reminder_sent ON reminder_log (loan_id, due_date, sent_on);
 
 -- =====================================================================
 -- Append-only enforcement (P1/P2, non-negotiable rule 2)
 -- =====================================================================
+
+-- ledger_entry: fully append-only — no UPDATE or DELETE. Corrections are
+-- posted as a REVERSAL row carrying reverses_id, never an edit in place.
 CREATE OR REPLACE FUNCTION append_only_guard() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only: post a REVERSAL entry instead of UPDATE/DELETE', TG_TABLE_NAME;
@@ -186,6 +201,14 @@ CREATE TRIGGER ledger_entry_append_only
   BEFORE UPDATE OR DELETE ON ledger_entry
   FOR EACH ROW EXECUTE FUNCTION append_only_guard();
 
-CREATE TRIGGER party_append_only
-  BEFORE UPDATE OR DELETE ON party
-  FOR EACH ROW EXECUTE FUNCTION append_only_guard();
+-- party: DELETE is blocked (the identity row is permanent) but UPDATE is
+-- allowed so the owner can fix contact fields (phone, notes, risk_tag, ...).
+CREATE OR REPLACE FUNCTION party_delete_guard() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'party rows cannot be deleted; add a note instead';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER party_delete_only
+  BEFORE DELETE ON party
+  FOR EACH ROW EXECUTE FUNCTION party_delete_guard();

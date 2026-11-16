@@ -5,16 +5,24 @@ Same inputs must always give the same output.
 
 ## 4.1 Interest accrual (simple interest)
 Split the loan's life into segments. A new segment starts when outstanding principal or rate changes
-(DISBURSE, TOPUP, principal allocation, RATE_CHANGE).
+(DISBURSE, TOPUP, a PAYMENT's PRINCIPAL bucket, RATE_CHANGE).
 
     interest_for_period = SUM over segments ( principal_in_segment * daily_rate * days_in_segment )
 
 Day-count convention (per loan):
-- Monthly flat ("Rs 2 per Rs 100 per month"): a full cycle earns P * monthly_rate.
+- Monthly flat ("Rs 2 per Rs 100 per month", DECISIONS #10): a full cycle earns P * monthly_rate.
   Partial month pro-rated: monthly_rate * days / days_in_that_calendar_month.
 - Annual: daily_rate = annual_rate / 365.
-- Interest counts from disbursement day; the repayment day belongs to the new (reduced) segment.
-- Convention must be documented in code and covered by tests.
+- Day-belongs-to rule: a calendar day `d` accrues interest at the rate and
+  principal in force FROM `d` (inclusive). An event dated `d` (payment, rate
+  change, top-up) therefore affects interest from `d` — the repayment day
+  belongs to the new (reduced) segment.
+- Cycle boundaries: `due_day` clamped to month-end (31 → 28/29/30). First
+  boundary = first clamped occurrence STRICTLY AFTER disbursement; a period
+  accrues on `[prev_boundary, boundary - 1]`, and its due date is `boundary`.
+
+Rounding is paise, half-up, only at the two defined points: when a due is
+generated, and for the open in-progress fraction at an as-of date (DECISIONS #8).
 
 Compound (optional): at each cycle end unpaid interest added to principal via CAPITALISE entry.
 EMI (optional): standard reducing-balance amortisation schedule.
