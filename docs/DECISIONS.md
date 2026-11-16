@@ -19,3 +19,9 @@
 9. **Grace days:** Default grace period is 3 calendar days. The original due date remains unchanged.
 
 10. **Day-count convention:** For PER_MONTH loans, use monthly flat interest. Prorate partial months using actual elapsed days divided by the actual number of calendar days in that month.
+
+11. Mid-cycle payoff: interest is charged up to (not including) the repayment day; payoff_today includes the open partial period.
+
+12. After maturity: interest keeps accruing monthly on unpaid principal until repaid; status MATURED + overdue flags.
+
+13. PRINCIPAL_PREPAY entry type removed; every payment goes through the waterfall (penalty -> interest -> principal).
