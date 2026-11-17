@@ -163,3 +163,31 @@ class AuditLog(Base):
     entity_id: Mapped[int | None] = mapped_column(ID)
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
     ip: Mapped[str | None] = mapped_column(Text)
+
+
+class CollectionActivity(Base):
+    """Append-only (DB trigger). Written only through services.log_contact()."""
+    __tablename__ = "collection_activity"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    contact_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(Text)
+    outcome: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    next_follow_up: Mapped[date | None] = mapped_column(Date)
+    actor: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class PaymentPromise(Base):
+    """Never money. Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "payment_promise"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    activity_id: Mapped[int | None] = mapped_column(ID, ForeignKey("collection_activity.id"))
+    made_on: Mapped[date] = mapped_column(Date)
+    promised_date: Mapped[date] = mapped_column(Date)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")

@@ -347,3 +347,115 @@ def calendar_weeks(cal: list[CalendarDay], start: date, end: date) -> list[list[
             week = []
         d += timedelta(days=1)
     return weeks
+
+
+# ---------------------------------------------------------------------------
+# collections (Phase 9)
+# ---------------------------------------------------------------------------
+@dataclass
+class ChaseItem:
+    loan_id: int
+    party: str
+    book: str
+    phone: str | None
+    overdue_paise: int
+    reason: str                 # FOLLOW_UP / BROKEN / PROMISE_DUE / NOT_CONTACTED
+    detail: str
+    on_date: date | None = None  # follow-up date, promised date or last contact
+    amount_paise: int = 0        # promise amount (BROKEN / PROMISE_DUE)
+    short_paise: int = 0
+    wa_url: str | None = None
+
+
+@dataclass
+class Collections:
+    as_of: date
+    follow_ups: list[ChaseItem] = field(default_factory=list)
+    broken: list[ChaseItem] = field(default_factory=list)
+    promises_due: list[ChaseItem] = field(default_factory=list)
+    not_contacted: list[ChaseItem] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.follow_ups) + len(self.broken) + len(self.promises_due) + len(self.not_contacted)
+
+
+def collections_overview(s: Session, as_of: date, book: str | None = None, *, soon_days: int = 7,
+                         quiet_days: int = 7, broken_window_days: int = 30) -> Collections:
+    """Who to chase today, for loans you GAVE:
+    follow_ups     latest contact set a follow-up date that has arrived
+    broken         promise broken in the last broken_window_days and not chased since
+    promises_due   pending promises due within soon_days (today included)
+    not_contacted  overdue, no pending promise, no contact in quiet_days"""
+    from sqlalchemy import select
+    from loan_tracker.collections import reminder_text, wa_link
+    from loan_tracker.db import models as m
+    from loan_tracker.services import promise_state
+
+    out = Collections(as_of)
+    rows = [r for r in portfolio(s, as_of, book=book, direction="GIVEN")
+            if r.status not in ("CLOSED", "SETTLED")]
+    if not rows:
+        return out
+    ids = [r.loan.id for r in rows]
+    acts: dict[int, list] = defaultdict(list)
+    for a in s.scalars(select(m.CollectionActivity).where(m.CollectionActivity.loan_id.in_(ids))
+                       .order_by(m.CollectionActivity.contact_date.desc(), m.CollectionActivity.id.desc())):
+        acts[a.loan_id].append(a)
+    proms: dict[int, list] = defaultdict(list)
+    for p in s.scalars(select(m.PaymentPromise).where(m.PaymentPromise.loan_id.in_(ids))
+                       .order_by(m.PaymentPromise.promised_date)):
+        proms[p.loan_id].append(p)
+
+    for r in rows:
+        loan, res = r.loan, r.result
+        late = [d for d in res.dues if d.status == "OVERDUE"]
+        overdue = sum(d.outstanding_paise for d in late)
+        last = acts[loan.id][0] if acts[loan.id] else None
+        name, phone = loan.party.name, loan.party.phone
+
+        def item(reason, detail, on_date=None, amount=0, short=0, msg=None):
+            text = msg or reminder_text(name, loan.id, overdue_paise=overdue,
+                                        overdue_since=late[0].due.due_date if late else None,
+                                        next_paise=res.projected_due.interest_paise if res.projected_due else 0,
+                                        next_date=res.projected_due.due_date if res.projected_due else None)
+            return ChaseItem(loan.id, name, loan.book, phone, overdue, reason, detail, on_date, amount, short,
+                             wa_link(phone, text))
+
+        pending = False
+        for p in proms[loan.id]:
+            st = promise_state(p, loan, as_of)
+            if st.status == "PENDING":
+                pending = True
+                if (p.promised_date - as_of).days <= soon_days:
+                    when = "today" if p.promised_date == as_of else f"in {(p.promised_date - as_of).days} days"
+                    out.promises_due.append(item(
+                        "PROMISE_DUE", f"Promised {when}" + (f"; {_inr(st.paid_paise)} paid so far" if st.paid_paise else ""),
+                        p.promised_date, p.amount_paise, st.short_paise,
+                        msg=reminder_text(name, loan.id, promise_paise=st.short_paise, promise_date=p.promised_date)))
+            elif st.status == "BROKEN" and (as_of - p.promised_date).days <= broken_window_days:
+                chased = last is not None and last.contact_date > p.promised_date
+                if not chased:
+                    out.broken.append(item(
+                        "BROKEN", f"Promised {_inr(p.amount_paise)} by {_dmy(p.promised_date)}; "
+                                  f"{_inr(st.paid_paise)} paid", p.promised_date, p.amount_paise, st.short_paise))
+        if last and last.next_follow_up and last.next_follow_up <= as_of:
+            days = (as_of - last.next_follow_up).days
+            out.follow_ups.append(item(
+                "FOLLOW_UP", (f"Follow-up {'today' if days == 0 else f'{days} days late'}"
+                              + (f" · last: {last.note}" if last.note else "")), last.next_follow_up))
+        elif overdue and not pending and (last is None or (as_of - last.contact_date).days >= quiet_days):
+            out.not_contacted.append(item(
+                "NOT_CONTACTED", "Never contacted" if last is None else
+                f"Last contact {_dmy(last.contact_date)} ({(as_of - last.contact_date).days} days ago)",
+                last.contact_date if last else None))
+    out.follow_ups.sort(key=lambda i: (i.on_date, i.party))
+    out.broken.sort(key=lambda i: (i.on_date, i.party))
+    out.promises_due.sort(key=lambda i: (i.on_date, i.party))
+    out.not_contacted.sort(key=lambda i: (-i.overdue_paise, i.party))
+    return out
+
+
+def _dmy(d: date) -> str:
+    from loan_tracker.web.formatting import dmy
+    return dmy(d)

@@ -343,6 +343,89 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# collections (Phase 9): contact history and promises. Never money: nothing
+# here touches ledger_entry, dues or allocations.
+# ---------------------------------------------------------------------------
+def log_contact(s: Session, loan_id: int, *, actor: str, as_of: date, contact_date: date | None = None,
+                kind: str = "CALL", outcome: str = "REACHED", note: str | None = None,
+                next_follow_up: date | None = None, promise_amount_paise: int | None = None,
+                promise_date: date | None = None) -> tuple[m.CollectionActivity, m.PaymentPromise | None]:
+    """Record a call/visit on a loan you GAVE. outcome PROMISED needs an amount
+    and a date and also creates the promise (same transaction)."""
+    from loan_tracker.collections import ACTIVITY_KINDS, OUTCOMES
+    loan = get_loan(s, loan_id)
+    if loan.direction != "GIVEN":
+        raise ServiceError("collections are for money you lent (given loans)")
+    contact_date = contact_date or as_of
+    if kind not in ACTIVITY_KINDS:
+        raise ServiceError(f"contact type must be one of {', '.join(ACTIVITY_KINDS)}")
+    if outcome not in OUTCOMES:
+        raise ServiceError(f"outcome must be one of {', '.join(OUTCOMES)}")
+    if contact_date > as_of:
+        raise ServiceError("contact date is in the future")
+    if contact_date < loan.start_date:
+        raise ServiceError("contact date is before the loan start date")
+    if next_follow_up is not None and next_follow_up < contact_date:
+        raise ServiceError("next follow-up must be on or after the contact date")
+    wants_promise = outcome == "PROMISED"
+    if wants_promise:
+        if not promise_amount_paise or promise_amount_paise <= 0:
+            raise ServiceError("a promise needs an amount more than zero")
+        if promise_date is None:
+            raise ServiceError("a promise needs the date they will pay by")
+        if promise_date < contact_date:
+            raise ServiceError("the promised date is before the contact date")
+    elif promise_amount_paise or promise_date:
+        raise ServiceError("choose the outcome 'Promised to pay' to record a promise")
+    act = m.CollectionActivity(loan_id=loan.id, contact_date=contact_date, kind=kind, outcome=outcome,
+                               note=(note or "").strip() or None, next_follow_up=next_follow_up,
+                               actor=actor or "unknown")
+    s.add(act)
+    s.flush()
+    promise = None
+    if wants_promise:
+        promise = m.PaymentPromise(loan_id=loan.id, activity_id=act.id, made_on=contact_date,
+                                   promised_date=promise_date, amount_paise=promise_amount_paise)
+        s.add(promise)
+        s.flush()
+    return act, promise
+
+
+def cancel_promise(s: Session, promise_id: int, note: str | None = None) -> m.PaymentPromise:
+    from datetime import datetime, timezone
+    p = s.get(m.PaymentPromise, promise_id)
+    if p is None:
+        raise ServiceError(f"promise {promise_id} not found")
+    if p.cancelled_at is not None:
+        raise ServiceError("this promise is already cancelled")
+    p.cancelled_at = datetime.now(timezone.utc)
+    p.cancel_note = (note or "").strip() or None
+    s.flush()
+    return p
+
+
+def live_payments(loan: m.Loan) -> list[tuple[date, int]]:
+    """(date, amount) of PAYMENT entries that were not reversed."""
+    reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
+    return [(e.entry_date, e.amount_paise) for e in loan.entries
+            if e.type == "PAYMENT" and e.id not in reversed_ids]
+
+
+def promise_state(p: m.PaymentPromise, loan: m.Loan, as_of: date):
+    from loan_tracker.collections import Promise, promise_status
+    return promise_status(Promise(p.made_on, p.promised_date, p.amount_paise, p.cancelled_at is not None),
+                          live_payments(loan), as_of)
+
+
+def loan_collections(s: Session, loan_id: int) -> tuple[list[m.CollectionActivity], list[m.PaymentPromise]]:
+    acts = list(s.scalars(select(m.CollectionActivity).where(m.CollectionActivity.loan_id == loan_id)
+                          .order_by(m.CollectionActivity.contact_date.desc(), m.CollectionActivity.id.desc())))
+    proms = list(s.scalars(select(m.PaymentPromise).where(m.PaymentPromise.loan_id == loan_id)
+                           .order_by(m.PaymentPromise.promised_date.desc(), m.PaymentPromise.id.desc())))
+    return acts, proms
+
+
+# ---------------------------------------------------------------------------
 # audit log (Phase 8): same transaction as the change, so a failed change
 # leaves no audit row and a saved change always has one
 # ---------------------------------------------------------------------------

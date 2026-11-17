@@ -189,3 +189,101 @@ class TestAuditLog:
         with pytest.raises(Exception, match="append-only"):
             with s.begin_nested():
                 s.execute(text("DELETE FROM audit_log WHERE id = :i"), {"i": row.id})
+
+
+class TestCollections:
+    """Loan: Rs 1 lakh given 1 Jan at 2%/month, due day 1 -> Rs 2,000 due 1 Feb, overdue after 4 Feb."""
+
+    def test_validation(self, s):
+        loan = make_loan(s)
+        taken = make_loan(s, direction="TAKEN", name="Lender")
+        a = dict(actor="owner", as_of=D(2026, 2, 10))
+        with pytest.raises(svc.ServiceError, match="money you lent"):
+            svc.log_contact(s, taken.id, **a)
+        with pytest.raises(svc.ServiceError, match="amount"):
+            svc.log_contact(s, loan.id, outcome="PROMISED", promise_date=D(2026, 2, 15), **a)
+        with pytest.raises(svc.ServiceError, match="date they will pay"):
+            svc.log_contact(s, loan.id, outcome="PROMISED", promise_amount_paise=100, **a)
+        with pytest.raises(svc.ServiceError, match="future"):
+            svc.log_contact(s, loan.id, contact_date=D(2026, 2, 11), **a)
+        with pytest.raises(svc.ServiceError, match="Promised to pay"):
+            svc.log_contact(s, loan.id, outcome="REACHED", promise_amount_paise=100, **a)
+        with pytest.raises(svc.ServiceError, match="follow-up"):
+            svc.log_contact(s, loan.id, next_follow_up=D(2026, 2, 9), **a)
+
+    def test_promise_follows_real_payments_and_reversals(self, s):
+        loan = make_loan(s)
+        _, p = svc.log_contact(s, loan.id, actor="owner", as_of=D(2026, 2, 10), outcome="PROMISED",
+                               promise_amount_paise=200_000, promise_date=D(2026, 2, 15))
+        assert svc.promise_state(p, svc.get_loan(s, loan.id), D(2026, 2, 12)).status == "PENDING"
+        e, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 2, 14), amount_paise=200_000,
+                              as_of=D(2026, 2, 14))
+        s.expire_all()
+        assert svc.promise_state(p, svc.get_loan(s, loan.id), D(2026, 2, 20)).status == "KEPT"
+        svc.reverse_entry(s, e.id, entry_date=D(2026, 2, 20), as_of=D(2026, 2, 20))
+        s.expire_all()
+        st = svc.promise_state(p, svc.get_loan(s, loan.id), D(2026, 2, 20))
+        assert (st.status, st.short_paise) == ("BROKEN", 200_000)
+
+    def test_promise_never_changes_money(self, s):
+        loan = make_loan(s)
+        before = svc.compute_loan(svc.get_loan(s, loan.id), D(2026, 2, 20)).balances
+        svc.log_contact(s, loan.id, actor="owner", as_of=D(2026, 2, 10), outcome="PROMISED",
+                        promise_amount_paise=200_000, promise_date=D(2026, 2, 15))
+        s.expire_all()
+        assert svc.compute_loan(svc.get_loan(s, loan.id), D(2026, 2, 20)).balances == before
+
+    def test_history_is_protected(self, s):
+        loan = make_loan(s)
+        act, p = svc.log_contact(s, loan.id, actor="owner", as_of=D(2026, 2, 10), outcome="PROMISED",
+                                 promise_amount_paise=100, promise_date=D(2026, 2, 15))
+        for sql in ("UPDATE collection_activity SET note = 'x' WHERE id = :i",
+                    "DELETE FROM collection_activity WHERE id = :i"):
+            with pytest.raises(DBAPIError, match="append-only"):
+                with s.begin_nested():
+                    s.execute(text(sql), {"i": act.id})
+        with pytest.raises(DBAPIError, match="only be cancelled"):
+            with s.begin_nested():
+                s.execute(text("UPDATE payment_promise SET amount_paise = 1 WHERE id = :i"), {"i": p.id})
+        with pytest.raises(DBAPIError, match="cannot be deleted"):
+            with s.begin_nested():
+                s.execute(text("DELETE FROM payment_promise WHERE id = :i"), {"i": p.id})
+        svc.cancel_promise(s, p.id, "settled by phone")
+        with pytest.raises(svc.ServiceError, match="already cancelled"):
+            svc.cancel_promise(s, p.id)
+        assert svc.promise_state(p, svc.get_loan(s, loan.id), D(2026, 3, 1)).status == "CANCELLED"
+
+
+class TestCollectionsOverview:
+    def test_who_to_chase(self, s):
+        loan = make_loan(s, name="Ravi")
+        quiet = make_loan(s, name="Quiet")
+        ov = reports.collections_overview(s, D(2026, 2, 10))
+        assert {i.party for i in ov.not_contacted} == {"Ravi", "Quiet"}
+        assert ov.not_contacted[0].overdue_paise == 200_000
+
+        svc.log_contact(s, loan.id, actor="o", as_of=D(2026, 2, 10), outcome="NO_ANSWER",
+                        next_follow_up=D(2026, 2, 12), note="phone off")
+        ov = reports.collections_overview(s, D(2026, 2, 11))
+        assert [i.party for i in ov.not_contacted] == ["Quiet"] and ov.follow_ups == []
+        ov = reports.collections_overview(s, D(2026, 2, 12))
+        assert [(i.party, i.detail) for i in ov.follow_ups] == [("Ravi", "Follow-up today · last: phone off")]
+
+        svc.log_contact(s, loan.id, actor="o", as_of=D(2026, 2, 12), outcome="PROMISED",
+                        promise_amount_paise=200_000, promise_date=D(2026, 2, 15))
+        ov = reports.collections_overview(s, D(2026, 2, 13))
+        assert [(i.party, i.detail) for i in ov.promises_due] == [("Ravi", "Promised in 2 days")]
+        assert "Ravi" not in {i.party for i in ov.not_contacted}   # a pending promise is enough for now
+
+        ov = reports.collections_overview(s, D(2026, 2, 16))
+        assert [(i.party, i.short_paise) for i in ov.broken] == [("Ravi", 200_000)]
+        svc.log_contact(s, loan.id, actor="o", as_of=D(2026, 2, 16), outcome="REACHED")
+        assert reports.collections_overview(s, D(2026, 2, 16)).broken == []   # chased since
+
+    def test_whatsapp_link_needs_a_phone(self, s):
+        loan = make_loan(s, name="Ravi")
+        assert reports.collections_overview(s, D(2026, 2, 10)).not_contacted[0].wa_url is None
+        svc.update_party(s, loan.party_id, name="Ravi", phone="98480 12345")
+        s.expire_all()
+        url = reports.collections_overview(s, D(2026, 2, 10)).not_contacted[0].wa_url
+        assert url.startswith("https://wa.me/919848012345?text=Hello%20Ravi")
