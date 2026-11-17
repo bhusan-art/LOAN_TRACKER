@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, empty, book_tag %}
+{% block title %}Collections{% endblock %}
+{% block crumb %}Collections{% endblock %}
+{% macro chase(items, tone, note) -%}
+{% for i in items %}
+<div class="listitem">
+  <div class="bubble {{ tone }}">{{ icon("phone") }}</div>
+  <a class="cover" href="/loans/{{ i.loan_id }}#collections" style="min-width:0"><strong>{{ i.party }} <span class="muted tiny">LN-{{ i.loan_id }} · {{ i.book|title }}</span></strong>
+    <small>{{ i.detail }}</small></a>
+  <div class="right">
+    <div class="amt">{% if i.amount_paise %}<b class="num">{{ i.short_paise|inr }}</b><small>{{ note }}</small>{% elif i.overdue_paise %}<b class="num">{{ i.overdue_paise|inr }}</b><small>overdue</small>{% endif %}</div>
+    {% if i.wa_url %}<a class="btn wa sm" href="{{ i.wa_url }}" target="_blank" rel="noopener" title="Open WhatsApp with a reminder typed in">{{ icon("chat") }}<span class="hide-sm">WhatsApp</span></a>
+    {% else %}<a class="btn secondary sm" href="/loans/{{ i.loan_id }}#collections" title="No mobile number saved">{{ icon("phone") }}<span class="hide-sm">Log</span></a>{% endif %}
+  </div>
+</div>
+{% endfor %}
+{%- endmacro %}
+{% block content %}
+<div class="heading">
+  <div><div class="eyebrow">Borrowers</div><h1>Collections</h1>
+    <p class="subtitle">Who to chase today. Promises are checked against the payments you record; they never count as money.</p></div>
+</div>
+<div class="stats">
+  {% from "_ui.html" import stat %}
+  {{ stat("Follow-ups due", ov.follow_ups|length, "Dates you set when logging a contact", "clock") }}
+  {{ stat("Broken promises", ov.broken|length, "Last 30 days, not chased since", "shield") }}
+  {{ stat("Promises due", ov.promises_due|length, "Within the next 7 days", "calendar") }}
+  {{ stat("Overdue, not contacted", ov.not_contacted|length, "No contact in the last 7 days", "people") }}
+</div>
+<div class="two equal chase">
+  <div class="card">
+    <div class="cardhead"><h2>Broken promises</h2>{% if ov.broken %}<span class="tag red">{{ ov.broken|length }}</span>{% endif %}</div>
+    {% if ov.broken %}{{ chase(ov.broken, "red", "short") }}{% else %}{{ empty("No broken promises.", "check") }}{% endif %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Follow-ups due</h2>{% if ov.follow_ups %}<span class="tag orange">{{ ov.follow_ups|length }}</span>{% endif %}</div>
+    {% if ov.follow_ups %}{{ chase(ov.follow_ups, "", "") }}{% else %}{{ empty("No follow-ups due today.", "check") }}{% endif %}
+  </div>
+</div>
+<div class="two equal chase">
+  <div class="card">
+    <div class="cardhead"><h2>Overdue, not contacted</h2>{% if ov.not_contacted %}<span class="tag red">{{ ov.not_contacted|length }}</span>{% endif %}</div>
+    {% if ov.not_contacted %}{{ chase(ov.not_contacted, "red", "") }}{% else %}{{ empty("Every overdue borrower has been contacted recently.", "check") }}{% endif %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Promises due soon</h2></div>
+    {% if ov.promises_due %}{{ chase(ov.promises_due, "green", "promised") }}{% else %}{{ empty("No promises due this week.", "calendar") }}{% endif %}
+  </div>
+</div>
+{% endblock %}

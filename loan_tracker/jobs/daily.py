@@ -45,6 +45,7 @@ class Digest:
     pay: list[DigestItem] = field(default_factory=list)
     collect: list[DigestItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    follow_up: list[str] = field(default_factory=list)   # collections (Phase 9)
     summary: list[str] = field(default_factory=list)
 
     @property
@@ -60,6 +61,8 @@ class Digest:
             lines += ["", "TO PAY"] + [f"{i.tag} {i.text}" for i in pay]
         if collect:
             lines += ["", "TO COLLECT"] + [f"{i.tag} {i.text}" for i in collect]
+        if self.follow_up:
+            lines += ["", "FOLLOW UP"] + self.follow_up
         if self.warnings:
             lines += ["", "WARNINGS"] + self.warnings
         if self.summary:
@@ -113,6 +116,15 @@ def build_digest(s: Session, run_date: date, settings: Settings) -> Digest:
                                  f"{inr(res.balances.principal_outstanding_paise)} principal due",
                 never_mute=taken)
 
+    ov = reports.collections_overview(s, run_date)
+    tag = lambda i: "[BIZ]" if i.book == "BUSINESS" else "[PER]"
+    live = lambda i: i.book not in settings.mute_books
+    dg.follow_up += [f"{tag(i)} Broken promise: {i.party} owed {inr(i.amount_paise)} by {dmy(i.on_date)}, "
+                     f"{inr(i.short_paise)} short" for i in ov.broken if live(i)]
+    dg.follow_up += [f"{tag(i)} Promise due today: {i.party} {inr(i.short_paise)}"
+                     for i in ov.promises_due if live(i) and i.on_date == run_date]
+    dg.follow_up += [f"{tag(i)} Follow up: {i.party} ({i.detail})" for i in ov.follow_ups if live(i)]
+
     db = reports.dashboard(s, run_date)
     dg.warnings = list(db.warning_text)
     if run_date.day == 1:
@@ -156,7 +168,7 @@ def run_daily(s: Session, run_date: date, settings: Settings, senders: dict[str,
             f"{channel}: sent" in (jr.summary or "") for jr in s.scalars(
                 select(m.JobRun).where(m.JobRun.run_date == run_date, m.JobRun.ok.is_(True))))
         fresh = [i for i in dg.items if (i.loan_id, i.due_date, i.kind) not in already]
-        if not fresh and (sent_today or not (dg.warnings or dg.summary)):
+        if not fresh and (sent_today or not (dg.warnings or dg.summary or dg.follow_up)):
             notes.append(f"{channel}: nothing new")
             continue
         text = dg.text(fresh)

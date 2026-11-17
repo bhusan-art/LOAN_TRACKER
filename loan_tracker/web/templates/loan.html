@@ -16,6 +16,8 @@
   <div class="headingActions">
     <a class="btn secondary" href="/reports/statement/{{ loan.id }}">{{ icon("file") }}Statement</a>
     <a class="btn secondary" href="/activity?loan_id={{ loan.id }}">{{ icon("clock") }}History</a>
+    {% if given %}{% if wa %}<a class="btn wa" href="{{ wa }}" target="_blank" rel="noopener">{{ icon("chat") }}WhatsApp reminder</a>
+    {% else %}<a class="btn secondary" href="/parties/{{ loan.party_id }}" title="Add a mobile number to send WhatsApp reminders">{{ icon("chat") }}Add phone for WhatsApp</a>{% endif %}{% endif %}
   </div>
 </div>
 
@@ -92,6 +94,50 @@
     </form>
   </div>
 </div>
+
+{% if given %}
+<div class="two" id="collections">
+  <div class="card">
+    <div class="cardhead"><h2>Log a contact</h2><span class="muted tiny">Notes and promises never change the money</span></div>
+    <form method="post" action="/loans/{{ loan.id }}/contacts">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="formgrid">
+        <div class="field"><label for="ck">How</label><select id="ck" name="kind">
+          {% for k, lab in kind_labels.items() %}<option value="{{ k }}">{{ lab }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="co">Outcome</label><select id="co" name="outcome" onchange="document.getElementById('promisebox').hidden = this.value !== 'PROMISED'">
+          {% for k, lab in outcome_labels.items() %}<option value="{{ k }}">{{ lab[0] }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="cd">Date</label><input id="cd" type="date" name="contact_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}" min="{{ loan.start_date.isoformat() }}"></div>
+        <div class="field"><label for="cf">Next follow-up</label><input id="cf" type="date" name="next_follow_up" min="{{ today.isoformat() }}"><div class="hint">Shows on the Collections page on that day.</div></div>
+        <div class="field full"><label for="cn">Note</label><input id="cn" name="note" maxlength="2000" placeholder="What did they say?"></div>
+      </div>
+      <div class="formgrid promisebox" id="promisebox" hidden>
+        <div class="field"><label for="pa">Promised amount (₹) *</label><input id="pa" name="promise_amount" inputmode="decimal" placeholder="e.g. 5,000"></div>
+        <div class="field"><label for="pd">Will pay by *</label><input id="pd" type="date" name="promise_date" min="{{ today.isoformat() }}"></div>
+        <div class="field full hint">Checked automatically against payments you record: kept, kept late or broken.</div>
+      </div>
+      <div class="formfoot"><button class="btn secondary">{{ icon("phone") }}Save contact</button></div>
+    </form>
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Promises and contacts</h2><a class="link" href="/collections">Collections →</a></div>
+    {% for p, st in proms %}{% set lab = promise_labels[st.status] %}
+    <div class="listitem">
+      <div class="bubble {{ 'green' if st.status == 'KEPT' else 'red' if st.status == 'BROKEN' else '' }}">{{ icon("check" if st.status in ("KEPT", "KEPT_LATE") else "clock") }}</div>
+      <div style="min-width:0"><strong>Promised {{ p.amount_paise|inr }} by {{ p.promised_date|dmy }} <span class="tag {{ lab[1] }}">{{ lab[0] }}</span></strong>
+        <small>Made {{ p.made_on|dmy }}{% if st.paid_paise %} · {{ st.paid_paise|inr }} paid by the date{% endif %}{% if st.status in ("PENDING", "BROKEN") and st.short_paise %} · {{ st.short_paise|inr }} short{% endif %}{% if p.cancel_note %} · {{ p.cancel_note }}{% endif %}</small></div>
+      {% if st.status == "PENDING" %}<div class="right"><form method="post" action="/promises/{{ p.id }}/cancel" onsubmit="return confirm('Cancel this promise?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="linkbtn">Cancel</button></form></div>{% endif %}
+    </div>{% endfor %}
+    {% for a in acts %}{% set lab = outcome_labels[a.outcome] %}
+    <div class="listitem">
+      <div class="bubble">{{ icon("chat" if a.kind in ("WHATSAPP", "SMS") else "people" if a.kind == "VISIT" else "phone") }}</div>
+      <div style="min-width:0"><strong>{{ kind_labels[a.kind] }} · <span class="tag {{ lab[1] }}">{{ lab[0] }}</span></strong>
+        <small>{{ a.contact_date|dmy }}{% if a.next_follow_up %} · follow up {{ a.next_follow_up|dmy }}{% endif %}{% if a.note %} · {{ a.note }}{% endif %}</small></div>
+    </div>{% endfor %}
+    {% if not proms and not acts %}{{ empty("No contacts yet. Log calls and visits here to keep track of who said what.", "phone") }}{% endif %}
+  </div>
+</div>
+{% endif %}
 
 <div class="card" style="margin-bottom:19px">
   <div class="cardhead"><h2>Interest dues</h2><span class="muted tiny">{{ r.dues|length }} due{{ "s" if r.dues|length != 1 }}</span></div>

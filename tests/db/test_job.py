@@ -68,3 +68,18 @@ def test_send_failure_retried_then_recorded(s):
     run = run_daily(s, D(2026, 1, 8), SETTINGS, {"EMAIL": lambda subj, text: calls.append(1) or "smtp down"})
     assert len(calls) == 2 and run.ok is False and "smtp down" in run.summary
     assert s.scalar(select(func.count()).select_from(m.ReminderLog)) == 0
+
+
+def test_follow_up_section(s):
+    _, given = setup_loans(s)
+    svc.log_contact(s, given.id, actor="o", as_of=D(2026, 1, 20), outcome="PROMISED",
+                    promise_amount_paise=322_581, promise_date=D(2026, 1, 22), next_follow_up=D(2026, 1, 22),
+                    note="salary on 22nd")
+    text = build_digest(s, D(2026, 1, 22), SETTINGS).text()
+    assert "FOLLOW UP" in text
+    assert "[PER] Promise due today: Ravi ₹3,225.81" in text
+    assert "[PER] Follow up: Ravi (Follow-up today · last: salary on 22nd)" in text
+    text = build_digest(s, D(2026, 1, 23), SETTINGS).text()
+    assert "[PER] Broken promise: Ravi owed ₹3,225.81 by 22 Jan 2026, ₹3,225.81 short" in text
+    muted = replace(SETTINGS, mute_books=frozenset({"PERSONAL"}))
+    assert "FOLLOW UP" not in build_digest(s, D(2026, 1, 23), muted).text()

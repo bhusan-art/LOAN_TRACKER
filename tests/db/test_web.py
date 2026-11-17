@@ -198,3 +198,31 @@ def test_failed_change_leaves_no_audit_row(client):
     client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
                                     "principal_paise": 100, "start_date": "2026-05-01", "rate": "2"})
     assert "Loan created" not in client.get("/activity").text
+
+
+def test_collections_pages_and_api(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi Kumar", "phone": "98480 12345"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 10_000_000, "start_date": "2026-01-01",
+                                          "rate": "2", "due_day": 1}).json()["id"]
+    page = client.get(f"/loans/{lid}").text
+    assert "Log a contact" in page and "https://wa.me/919848012345?text=Hello%20Ravi" in page
+    r = post(client, f"/loans/{lid}/contacts", {"kind": "CALL", "outcome": "PROMISED", "note": "will pay",
+                                                 "promise_amount": "2,000", "promise_date": "2026-04-05",
+                                                 "contact_date": "2026-03-30"},
+             headers={"referer": f"/loans/{lid}"})
+    assert "is tracked against real payments" in r.text and "Pending" in r.text
+    assert "Promises due soon" in client.get("/collections").text
+    data = client.get(f"/api/loans/{lid}/contacts").json()
+    assert data["promises"][0]["status"] == "PENDING" and data["contacts"][0]["outcome"] == "PROMISED"
+    pr = data["promises"][0]["id"]
+    assert client.post(f"/api/promises/{pr}/cancel", json={"note": "changed plan"}).json()["cancelled"]
+    assert client.post(f"/api/promises/{pr}/cancel", json={}).status_code == 400
+    bad = client.post(f"/api/loans/{lid}/contacts", json={"outcome": "LATER"})
+    assert bad.status_code == 400 and "outcome" in bad.json()["detail"]
+    assert client.post(f"/api/loans/{lid}/contacts", json={"kind": "VISIT", "outcome": "NO_ANSWER",
+                                                          "next_follow_up": "2026-04-02"}).status_code == 201
+    assert len(client.get("/api/collections").json()["follow_ups"]) == 0   # follow-up date not reached
+    log = client.get("/activity").text
+    assert "Contact logged" in log and "Promise made" in log and "Promise cancelled" in log

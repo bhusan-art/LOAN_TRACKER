@@ -60,7 +60,12 @@
   Migration 0002 audit_log (append-only trigger): logins, loans, entries, reversals,
   status, parties, funding, CLI users; /activity page + per-loan history. 121 tests.
 
+- Phase 9 (collections): migration 0003 collection_activity (append-only) and
+  payment_promise (cancel-only). collections.py (pure): promise status from live
+  payments, wa.me links, reminder text. Collections page, loan-page contact form +
+  WhatsApp button, /api contacts/promises, FOLLOW UP digest section. 147 tests.
+
 ## Next step
-V2 plan: Phase 9 collections (follow-ups, promises, WhatsApp button), 10 receipts,
-11 cash accounts + shortfall, 12 what-if simulator.
+V2 plan: Phase 10 receipts + closure certificate, 11 cash accounts + shortfall,
+12 what-if simulator.
 

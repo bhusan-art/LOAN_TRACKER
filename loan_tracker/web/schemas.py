@@ -73,6 +73,16 @@ class FundingIn(_Body):
     confirm_cross_book: bool = False
 
 
+class ContactIn(_Body):
+    kind: Literal["CALL", "VISIT", "WHATSAPP", "SMS", "OTHER"] = "CALL"
+    outcome: Literal["REACHED", "NO_ANSWER", "PROMISED", "DISPUTED", "PAID", "OTHER"] = "REACHED"
+    contact_date: date | None = None        # default: today
+    note: Annotated[str, Field(max_length=2000)] | None = None
+    next_follow_up: date | None = None
+    promise_amount_paise: Paise | None = None   # outcome PROMISED only
+    promise_date: date | None = None             # outcome PROMISED only
+
+
 def describe(errors: list[dict]) -> str:
     """One readable line from pydantic errors: 'book: Input should be ...; rate: ...'."""
     parts = []

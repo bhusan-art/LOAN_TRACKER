@@ -28,7 +28,7 @@ from loan_tracker.config import Settings, get_settings, today as clock_today
 from loan_tracker.db import models as m
 from loan_tracker.db.session import session_factory
 from loan_tracker.web import formatting as fmt
-from loan_tracker.web.schemas import EntryIn, FundingIn, LoanIn, PartyIn, ReverseIn, describe
+from loan_tracker.web.schemas import ContactIn, EntryIn, FundingIn, LoanIn, PartyIn, ReverseIn, describe
 
 HERE = Path(__file__).resolve().parent
 BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
@@ -54,7 +54,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
     templates.env.filters.update(when=lambda dt: fmt.when(dt, settings.timezone))
     templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style,
-                                 action_labels=fmt.ACTION_LABELS)
+                                 action_labels=fmt.ACTION_LABELS, kind_labels=fmt.KIND_LABELS,
+                                 outcome_labels=fmt.OUTCOME_LABELS, promise_labels=fmt.PROMISE_LABELS)
     insecure_secret = (len(settings.secret_key) < 32 or "change-me" in settings.secret_key
                        or settings.secret_key.startswith("dev-only"))
 
@@ -316,8 +317,57 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         links = [l for l in svc.funding_links(s) if loan_id in (l.taken_loan_id, l.given_loan_id)]
         others = {l2.id: l2 for l2 in s.scalars(select(m.Loan).where(
             m.Loan.id.in_([l.taken_loan_id for l in links] + [l.given_loan_id for l in links])))}
+        acts, proms, wa = [], [], None
+        if loan.direction == "GIVEN":
+            from loan_tracker.collections import reminder_text, wa_link
+            acts, promises = svc.loan_collections(s, loan_id)
+            proms = [(p, svc.promise_state(p, loan, today())) for p in promises]
+            late = [d for d in res.dues if d.status == "OVERDUE"]
+            pend_p, pending = next(((p, st) for p, st in sorted(proms, key=lambda x: x[0].promised_date)
+                                    if st.status == "PENDING"), (None, None))
+            wa = wa_link(loan.party.phone, reminder_text(
+                loan.party.name, loan.id,
+                overdue_paise=sum(d.outstanding_paise for d in late),
+                overdue_since=late[0].due.due_date if late else None,
+                next_paise=res.projected_due.interest_paise if res.projected_due else 0,
+                next_date=res.projected_due.due_date if res.projected_due else None,
+                promise_paise=pending.short_paise if pending else 0,
+                promise_date=pend_p.promised_date if pend_p else None))
         return render(request, "loan.html", loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
-                      links=links, others=others)
+                      links=links, others=others, acts=acts, proms=proms, wa=wa)
+
+    @app.post("/loans/{loan_id}/contacts", dependencies=[Depends(check_csrf)])
+    def contact_create(loan_id: int, request: Request, kind: str = Form("CALL"), outcome: str = Form("REACHED"),
+                       contact_date: str = Form(""), note: str = Form(""), next_follow_up: str = Form(""),
+                       promise_amount: str = Form(""), promise_date: str = Form(""),
+                       username: str = Depends(user), s: Session = Depends(db)):
+        t = today()
+        act, promise = svc.log_contact(
+            s, loan_id, actor=username, as_of=t, contact_date=parse_date(contact_date, t), kind=kind,
+            outcome=outcome, note=note, next_follow_up=parse_date(next_follow_up, None) if next_follow_up else None,
+            promise_amount_paise=svc.rupees_to_paise(promise_amount) if promise_amount else None,
+            promise_date=parse_date(promise_date, None) if promise_date else None)
+        log(request, s, "CONTACT_LOGGED", "collection_activity", act.id, loan_id=loan_id, type=kind,
+            outcome=outcome, note=act.note)
+        if promise:
+            log(request, s, "PROMISE_MADE", "payment_promise", promise.id, loan_id=loan_id,
+                amount_paise=promise.amount_paise, promised_date=promise.promised_date)
+        msg = "Contact saved." + (f" Promise of {fmt.inr(promise.amount_paise)} by {fmt.dmy(promise.promised_date)} "
+                                  "is tracked against real payments." if promise else "")
+        return back(request, referer(request, f"/loans/{loan_id}"), flash=msg)
+
+    @app.post("/promises/{promise_id}/cancel", dependencies=[Depends(check_csrf)])
+    def promise_cancel(promise_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
+                       s: Session = Depends(db)):
+        p = svc.cancel_promise(s, promise_id, note)
+        log(request, s, "PROMISE_CANCELLED", "payment_promise", p.id, loan_id=p.loan_id,
+            amount_paise=p.amount_paise, note=p.cancel_note)
+        return back(request, referer(request, f"/loans/{p.loan_id}"), flash="Promise cancelled.")
+
+    @app.get("/collections", response_class=HTMLResponse)
+    def collections_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        ov = reports.collections_overview(s, today(), BOOKS[book_of(request)])
+        return render(request, "collections.html", ov=ov)
 
     @app.post("/loans/{loan_id}/entries", dependencies=[Depends(check_csrf)])
     def loan_entry(loan_id: int, request: Request, type: str = Form(...), entry_date: str = Form(""),
@@ -552,6 +602,42 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         log(request, s, "FUNDING_LINKED", "funding_link", link.id, taken_loan_id=link.taken_loan_id,
             given_loan_id=link.given_loan_id, amount_paise=link.amount_paise, via="api")
         return {"id": link.id}
+
+    @app.get("/api/collections")
+    def api_collections(request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        return jsonable(reports.collections_overview(s, today(), BOOKS[book_of(request)]))
+
+    @app.get("/api/loans/{loan_id}/contacts")
+    def api_contacts(loan_id: int, _: str = Depends(user), s: Session = Depends(db)):
+        loan = svc.get_loan(s, loan_id)
+        acts, proms = svc.loan_collections(s, loan_id)
+        return {"contacts": [{"id": a.id, "contact_date": str(a.contact_date), "kind": a.kind, "outcome": a.outcome,
+                              "note": a.note, "next_follow_up": str(a.next_follow_up) if a.next_follow_up else None,
+                              "by": a.actor} for a in acts],
+                "promises": [{"id": p.id, "made_on": str(p.made_on), "promised_date": str(p.promised_date),
+                              "amount_paise": p.amount_paise} | jsonable(svc.promise_state(p, loan, today()))
+                             for p in proms]}
+
+    @app.post("/api/loans/{loan_id}/contacts", status_code=201)
+    def api_contact_create(request: Request, loan_id: int, payload: ContactIn, username: str = Depends(user),
+                           s: Session = Depends(db)):
+        t = today()
+        act, promise = svc.log_contact(s, loan_id, actor=username, as_of=t,
+                                       **payload.model_dump(exclude_none=True))
+        log(request, s, "CONTACT_LOGGED", "collection_activity", act.id, loan_id=loan_id, type=act.kind,
+            outcome=act.outcome, note=act.note, via="api")
+        if promise:
+            log(request, s, "PROMISE_MADE", "payment_promise", promise.id, loan_id=loan_id,
+                amount_paise=promise.amount_paise, promised_date=promise.promised_date, via="api")
+        return {"id": act.id, "promise_id": promise.id if promise else None}
+
+    @app.post("/api/promises/{promise_id}/cancel")
+    def api_promise_cancel(request: Request, promise_id: int, payload: ReverseIn | None = None,
+                           _: str = Depends(user), s: Session = Depends(db)):
+        p = svc.cancel_promise(s, promise_id, payload.note if payload else None)
+        log(request, s, "PROMISE_CANCELLED", "payment_promise", p.id, loan_id=p.loan_id,
+            amount_paise=p.amount_paise, note=p.cancel_note, via="api")
+        return {"id": p.id, "cancelled": True}
 
     @app.get("/api/calendar")
     def api_calendar(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):

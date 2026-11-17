@@ -39,3 +39,11 @@ details.more[open] summary{margin-bottom:16px}
 .tabs a{border-radius:9px;padding:10px 13px;color:var(--muted);font-weight:800;font-size:12px}
 .tabs a.active{background:var(--brandlight);color:var(--brand)}
 .listitem .right b,.listitem .right small{white-space:nowrap}
+
+/* Phase 9: collections */
+.btn.wa{background:#25d366;color:#fff;box-shadow:0 4px 10px #25d36633}
+.btn.wa.sm{padding:7px 10px}
+.promisebox{margin-top:18px;padding:16px;border:1px dashed var(--brand);border-radius:12px;background:var(--brandlight)}
+.promisebox .hint{margin-top:0}
+.chase .listitem .right{display:flex;gap:8px;align-items:center}
+.chase .right .amt{text-align:right;margin-right:6px}

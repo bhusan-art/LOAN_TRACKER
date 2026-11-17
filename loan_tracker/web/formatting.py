@@ -103,4 +103,13 @@ ACTION_LABELS = {
     "ENTRY_REVERSED": ("Entry reversed", "orange"), "STATUS_CHANGED": ("Status changed", "orange"),
     "FUNDING_LINKED": ("Funding linked", "purple"), "USER_CREATED": ("User created", "gray"),
     "USER_RESET": ("Login reset", "orange"),
+    "CONTACT_LOGGED": ("Contact logged", "purple"), "PROMISE_MADE": ("Promise made", "purple"),
+    "PROMISE_CANCELLED": ("Promise cancelled", "orange"),
 }
+
+KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}
+OUTCOME_LABELS = {"REACHED": ("Spoke to them", "gray"), "NO_ANSWER": ("No answer", "orange"),
+                  "PROMISED": ("Promised to pay", "purple"), "DISPUTED": ("Disputed", "red"),
+                  "PAID": ("Said they paid", "green"), "OTHER": ("Other", "gray")}
+PROMISE_LABELS = {"PENDING": ("Pending", "purple"), "KEPT": ("Kept", "green"), "KEPT_LATE": ("Kept late", "orange"),
+                  "BROKEN": ("Broken", "red"), "CANCELLED": ("Cancelled", "gray")}
