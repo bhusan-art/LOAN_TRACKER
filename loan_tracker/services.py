@@ -357,6 +357,206 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# bank statement import (Phase 13). Money reaches the ledger only when the
+# owner records a payment from a bank line (post_entry, like any payment).
+# ---------------------------------------------------------------------------
+def import_statement(s: Session, account_id: int, data: bytes, *, file_name: str, actor: str, as_of: date,
+                     update_balance: bool = True) -> tuple[m.BankImport, m.CashBalance | None]:
+    """Store the transactions of a bank CSV. Rows already imported (same
+    account, same fingerprint) are skipped. Optionally set the account balance
+    from the statement's last balance."""
+    from loan_tracker.bankimport import StatementError, fingerprints, parse_statement
+    acc = s.get(m.CashAccount, account_id)
+    if acc is None:
+        raise ServiceError(f"account {account_id} not found")
+    if not acc.is_active:
+        raise ServiceError(f"{acc.name} is closed; reopen it first")
+    try:
+        rows = parse_statement(data)
+    except StatementError as exc:
+        raise ServiceError(f"could not read the statement: {exc}") from exc
+    future = [r for r in rows if r.txn_date > as_of]
+    if future:
+        raise ServiceError(f"line {future[0].line_no} is dated {future[0].txn_date:%d %b %Y}, in the future")
+    prints = fingerprints(rows, acc.id)
+    known = set(s.scalars(select(m.BankTxn.fingerprint).where(m.BankTxn.account_id == acc.id,
+                                                               m.BankTxn.fingerprint.in_(prints))))
+    imp = m.BankImport(account_id=acc.id, file_name=(file_name or "statement.csv")[-120:], actor=actor or "unknown",
+                       row_count=len(rows), new_count=sum(1 for f in prints if f not in known),
+                       period_start=min(r.txn_date for r in rows), period_end=max(r.txn_date for r in rows))
+    s.add(imp)
+    s.flush()
+    for r, f in zip(rows, prints):
+        if f not in known:
+            s.add(m.BankTxn(import_id=imp.id, account_id=acc.id, fingerprint=f, line_no=r.line_no,
+                            txn_date=r.txn_date, description=r.description, reference=r.reference,
+                            amount_paise=r.amount_paise, balance_paise=r.balance_paise))
+    s.flush()
+    bal = None
+    with_bal = [r for r in rows if r.balance_paise is not None]
+    if update_balance and with_bal:
+        ascending = rows[0].txn_date <= rows[-1].txn_date        # banks list oldest or newest first
+        last_day = max(r.txn_date for r in with_bal)
+        on_day = [r for r in with_bal if r.txn_date == last_day]
+        last = on_day[-1] if ascending else on_day[0]
+        current = latest_balances(s, include_inactive=True)
+        newest = next((b.as_of for a, b in current if a.id == acc.id and b is not None), None)
+        if newest is None or last.txn_date >= newest:
+            bal = set_cash_balance(s, acc.id, balance_paise=last.balance_paise, on=last.txn_date, as_of=as_of,
+                                   note=f"from bank statement {imp.file_name}")
+    return imp, bal
+
+
+def bank_imports(s: Session, limit: int = 50) -> list[m.BankImport]:
+    return list(s.scalars(select(m.BankImport).order_by(m.BankImport.id.desc()).limit(limit)))
+
+
+def bank_txns(s: Session, import_id: int | None = None, status: str | None = None) -> list[m.BankTxn]:
+    q = select(m.BankTxn)
+    if import_id is not None:
+        q = q.where(m.BankTxn.import_id == import_id)
+    if status:
+        q = q.where(m.BankTxn.status == status)
+    return list(s.scalars(q.order_by(m.BankTxn.txn_date, m.BankTxn.line_no, m.BankTxn.id)))
+
+
+def _get_txn(s: Session, txn_id: int) -> m.BankTxn:
+    t = s.get(m.BankTxn, txn_id)
+    if t is None:
+        raise ServiceError(f"bank transaction {txn_id} not found")
+    return t
+
+
+def _decide(t: m.BankTxn, status: str, entry_id: int | None = None, note: str | None = None) -> None:
+    from datetime import datetime, timezone
+    t.status, t.ledger_entry_id = status, entry_id
+    t.note = (note or "").strip() or None
+    t.decided_at = datetime.now(timezone.utc) if status != "NEW" else None
+
+
+def match_context(s: Session, as_of: date, txns: list[m.BankTxn]):
+    """LoanInfo and EntryInfo lists for bankimport.suggest()."""
+    from loan_tracker.bankimport import EXISTING_WINDOW_DAYS, EntryInfo, LoanInfo
+    from datetime import timedelta as td
+    loans, entries = [], []
+    if not txns:
+        return loans, entries
+    lo = min(t.txn_date for t in txns) - td(days=EXISTING_WINDOW_DAYS)
+    hi = max(t.txn_date for t in txns) + td(days=EXISTING_WINDOW_DAYS)
+    linked = set(s.scalars(select(m.BankTxn.ledger_entry_id).where(m.BankTxn.ledger_entry_id.is_not(None))))
+    for r in portfolio(s, as_of):
+        b = r.result.balances
+        if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF"):
+            loans.append(LoanInfo(r.loan.id, r.loan.party.name, r.loan.party.phone, r.loan.direction,
+                                  due_paise=b.interest_outstanding_paise + b.penalty_outstanding_paise,
+                                  next_paise=r.result.projected_due.interest_paise if r.result.projected_due else 0,
+                                  payoff_paise=b.payoff_today_paise))
+        reversed_ids = {e.reverses_id for e in r.loan.entries if e.reverses_id}
+        for e in r.loan.entries:
+            if e.type in ("PAYMENT", "DISBURSE", "TOPUP") and e.id not in reversed_ids and lo <= e.entry_date <= hi:
+                entries.append(EntryInfo(e.id, r.loan.id, r.loan.direction, e.type, e.entry_date, e.amount_paise,
+                                         linked=e.id in linked))
+    return loans, entries
+
+
+def txn_suggestions(s: Session, as_of: date, txns: list[m.BankTxn]) -> dict[int, list]:
+    from loan_tracker.bankimport import suggest
+    open_txns = [t for t in txns if t.status == "NEW"]
+    loans, entries = match_context(s, as_of, open_txns)
+    return {t.id: suggest(t.txn_date, t.amount_paise, t.description + " " + (t.reference or ""), loans, entries)
+            for t in open_txns}
+
+
+def _check_direction(t: m.BankTxn, loan: m.Loan, entry_type: str) -> None:
+    money_in = t.amount_paise > 0
+    if entry_type == "PAYMENT":
+        ok = (loan.direction == "GIVEN") == money_in
+        need = "money in on a loan you gave" if loan.direction == "GIVEN" else "money out on a loan you took"
+    else:
+        ok = (loan.direction == "TAKEN") == money_in
+        need = "money in on a loan you took" if loan.direction == "TAKEN" else "money out on a loan you gave"
+    if not ok:
+        raise ServiceError(f"this bank line is money {'in' if money_in else 'out'}; a {entry_type.lower()} on "
+                           f"LN-{loan.id} must be {need}")
+
+
+def link_bank_txn(s: Session, txn_id: int, entry_id: int) -> m.BankTxn:
+    """Mark a bank line as the same money as an entry already in the ledger."""
+    t = _get_txn(s, txn_id)
+    if t.status != "NEW":
+        raise ServiceError("this bank line is already decided; undo it first")
+    e = s.get(m.LedgerEntry, entry_id)
+    if e is None or e.type not in ("PAYMENT", "DISBURSE", "TOPUP"):
+        raise ServiceError("choose a payment, disbursement or top-up entry")
+    if s.scalar(select(m.LedgerEntry.id).where(m.LedgerEntry.reverses_id == e.id)):
+        raise ServiceError(f"entry #{e.id} was reversed")
+    if e.amount_paise != abs(t.amount_paise):
+        raise ServiceError(f"amounts differ: bank {abs(t.amount_paise) / 100:,.2f}, entry {e.amount_paise / 100:,.2f}")
+    if s.scalar(select(m.BankTxn.id).where(m.BankTxn.ledger_entry_id == e.id)):
+        raise ServiceError(f"entry #{e.id} is already linked to another bank line")
+    _check_direction(t, get_loan(s, e.loan_id), e.type)
+    _decide(t, "LINKED", e.id)
+    s.flush()
+    return t
+
+
+def record_bank_txn(s: Session, txn_id: int, loan_id: int, as_of: date) -> tuple[m.BankTxn, m.LedgerEntry]:
+    """Record a bank line as a PAYMENT on a loan (normal waterfall; receipt for given loans)."""
+    t = _get_txn(s, txn_id)
+    if t.status != "NEW":
+        raise ServiceError("this bank line is already decided; undo it first")
+    loan = get_loan(s, loan_id)
+    _check_direction(t, loan, "PAYMENT")
+    e, _ = post_entry(s, loan.id, type="PAYMENT", entry_date=t.txn_date, as_of=as_of,
+                      amount_paise=abs(t.amount_paise), payment_mode="BANK",
+                      reference=(t.reference or f"bank line {t.id}")[:100], note=t.description[:200] or None)
+    _decide(t, "RECORDED", e.id)
+    s.flush()
+    return t, e
+
+
+def ignore_bank_txn(s: Session, txn_id: int, note: str | None = None) -> m.BankTxn:
+    t = _get_txn(s, txn_id)
+    if t.status != "NEW":
+        raise ServiceError("this bank line is already decided; undo it first")
+    _decide(t, "IGNORED", None, note)
+    s.flush()
+    return t
+
+
+def undo_bank_txn(s: Session, txn_id: int) -> m.BankTxn:
+    """Back to NEW. A RECORDED line can only be undone after its payment is
+    reversed (the ledger is never edited)."""
+    t = _get_txn(s, txn_id)
+    if t.status == "NEW":
+        raise ServiceError("nothing to undo")
+    if t.status == "RECORDED" and not s.scalar(
+            select(m.LedgerEntry.id).where(m.LedgerEntry.reverses_id == t.ledger_entry_id)):
+        raise ServiceError(f"reverse payment #{t.ledger_entry_id} on the loan first; the ledger is never edited")
+    _decide(t, "NEW")
+    s.flush()
+    return t
+
+
+def link_exact_matches(s: Session, import_id: int, as_of: date) -> list[m.BankTxn]:
+    """Link every open line of an import that has exactly one already-recorded match."""
+    from dataclasses import replace as _replace
+    from loan_tracker.bankimport import suggest
+    txns = bank_txns(s, import_id, "NEW")
+    loans, entries = match_context(s, as_of, txns)        # computed once for the whole statement
+    done, used = [], set()
+    for t in txns:
+        avail = [_replace(e, linked=True) if e.entry_id in used else e for e in entries]
+        exact = [x for x in suggest(t.txn_date, t.amount_paise, t.description, loans, avail, limit=10)
+                 if x.kind == "EXISTING"]
+        if len(exact) == 1:
+            link_bank_txn(s, t.id, exact[0].entry_id)
+            used.add(exact[0].entry_id)
+            done.append(t)
+    return done
+
+
+# ---------------------------------------------------------------------------
 # cash and liquidity (Phase 11): accounts, balance history, planned items.
 # Not loan money: nothing here touches the ledger.
 # ---------------------------------------------------------------------------

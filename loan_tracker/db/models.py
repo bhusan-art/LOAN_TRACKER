@@ -251,3 +251,38 @@ class PlannedCashItem(Base):
     description: Mapped[str] = mapped_column(Text)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class BankImport(Base):
+    """Append-only (DB trigger): one row per uploaded statement."""
+    __tablename__ = "bank_import"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    file_name: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(Text)
+    row_count: Mapped[int] = mapped_column(Integer)
+    new_count: Mapped[int] = mapped_column(Integer)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    account: Mapped["CashAccount"] = relationship(lazy="joined")
+
+
+class BankTxn(Base):
+    """Bank figures are fixed (DB trigger); only status/ledger_entry_id/note/decided_at change."""
+    __tablename__ = "bank_txn"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    import_id: Mapped[int] = mapped_column(ID, ForeignKey("bank_import.id"))
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    fingerprint: Mapped[str] = mapped_column(Text)
+    line_no: Mapped[int] = mapped_column(Integer)
+    txn_date: Mapped[date] = mapped_column(Date)
+    description: Mapped[str] = mapped_column(Text, default="")
+    reference: Mapped[str | None] = mapped_column(Text)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    balance_paise: Mapped[int | None] = mapped_column(ID)
+    status: Mapped[str] = mapped_column(Text, default="NEW")
+    ledger_entry_id: Mapped[int | None] = mapped_column(ID, ForeignKey("ledger_entry.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")

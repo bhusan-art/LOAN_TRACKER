@@ -571,3 +571,96 @@ class TestSimulator:
         assert sim.after.expected.short_date == D(2026, 1, 15)     # you would need the Rs 1 lakh first
         labels = [i.party for d in sim.after.calendar for i in d.money_out if i.status == "SIMULATED"]
         assert labels == ["New loan you give (principal)"]
+
+
+BANK_CSV = b"""Date,Narration,Chq./Ref.No.,Withdrawal Amt.,Deposit Amt.,Closing Balance
+05/02/26,UPI-RAVI-603612345,603612345,,1500.00,26500.00
+10/02/26,UPI-RAVI-603612999,603612999,,2000.00,28500.00
+12/02/26,ATM WDL,,500.00,,28000.00
+"""
+
+
+class TestBankImport:
+    def _setup(self, s):
+        loan, p1, p2, _ = example_a(s)        # Ravi: Rs 1,500 on 5 Feb and Rs 32,500 on 15 Mar recorded
+        acc = svc.create_cash_account(s, name="HDFC", kind="BANK", book="PERSONAL", balance_paise=0,
+                                      as_of=D(2026, 1, 1))
+        return loan, p1, acc
+
+    def test_import_skips_duplicates_and_sets_balance(self, s):
+        loan, _, acc = self._setup(s)
+        imp, bal = svc.import_statement(s, acc.id, BANK_CSV, file_name="feb.csv", actor="o", as_of=D(2026, 4, 1))
+        assert (imp.row_count, imp.new_count, imp.period_start, imp.period_end) == (
+            3, 3, D(2026, 2, 5), D(2026, 2, 12))
+        assert (bal.balance_paise, bal.as_of) == (2_800_000, D(2026, 2, 12))
+        again, _ = svc.import_statement(s, acc.id, BANK_CSV, file_name="feb.csv", actor="o", as_of=D(2026, 4, 1))
+        assert again.new_count == 0 and len(svc.bank_txns(s)) == 3
+
+    def test_newest_first_statement_takes_the_latest_balance(self, s):
+        _, _, acc = self._setup(s)
+        lines = BANK_CSV.splitlines()
+        newest_first = b"\n".join([lines[0], *reversed(lines[1:])]) + b"\n"
+        _, bal = svc.import_statement(s, acc.id, newest_first, file_name="x.csv", actor="o", as_of=D(2026, 4, 1))
+        assert (bal.balance_paise, bal.as_of) == (2_800_000, D(2026, 2, 12))
+
+    def test_older_statement_does_not_replace_a_newer_balance(self, s):
+        _, _, acc = self._setup(s)
+        svc.set_cash_balance(s, acc.id, balance_paise=1, on=D(2026, 3, 1), as_of=D(2026, 4, 1))
+        _, bal = svc.import_statement(s, acc.id, BANK_CSV, file_name="x.csv", actor="o", as_of=D(2026, 4, 1))
+        assert bal is None
+
+    def test_suggestions_link_record_ignore_undo(self, s):
+        loan, p1, acc = self._setup(s)
+        imp, _ = svc.import_statement(s, acc.id, BANK_CSV, file_name="feb.csv", actor="o", as_of=D(2026, 4, 1))
+        t1, t2, t3 = svc.bank_txns(s, imp.id)
+        sug = svc.txn_suggestions(s, D(2026, 4, 1), [t1, t2, t3])
+        assert (sug[t1.id][0].kind, sug[t1.id][0].entry_id) == ("EXISTING", p1.id)     # already recorded
+        assert sug[t2.id][0].kind == "NEW_PAYMENT" and sug[t2.id][0].loan_id == loan.id  # name in narration
+        assert sug[t3.id] == []
+        # link-all-exact links only the Rs 1,500 line
+        assert [t.id for t in svc.link_exact_matches(s, imp.id, D(2026, 4, 1))] == [t1.id]
+        # the same Rs 1,500 seen again on another account's statement cannot claim the same entry
+        acc2 = svc.create_cash_account(s, name="SBI", kind="BANK", book="PERSONAL", balance_paise=0,
+                                       as_of=D(2026, 1, 1))
+        imp2, _ = svc.import_statement(s, acc2.id, BANK_CSV, file_name="dup.csv", actor="o", as_of=D(2026, 4, 1))
+        with pytest.raises(svc.ServiceError, match="already linked"):
+            svc.link_bank_txn(s, svc.bank_txns(s, imp2.id)[0].id, p1.id)
+        # record the Rs 2,000 as a payment: normal waterfall, receipt issued
+        t2, e = svc.record_bank_txn(s, t2.id, loan.id, D(2026, 4, 1))
+        assert (t2.status, e.payment_mode, e.entry_date, e.amount_paise) == ("RECORDED", "BANK", D(2026, 2, 10), 200_000)
+        assert s.scalar(select(m.Receipt.number).where(m.Receipt.ledger_entry_id == e.id))
+        with pytest.raises(svc.ServiceError, match="reverse payment"):
+            svc.undo_bank_txn(s, t2.id)
+        svc.reverse_entry(s, e.id, entry_date=D(2026, 4, 1), as_of=D(2026, 4, 1))
+        assert svc.undo_bank_txn(s, t2.id).status == "NEW"
+        assert svc.ignore_bank_txn(s, t3.id, "cash for home").status == "IGNORED"
+
+    def test_wrong_direction_and_amount_are_refused(self, s):
+        loan, p1, acc = self._setup(s)
+        taken = make_loan(s, direction="TAKEN", name="Lender")
+        imp, _ = svc.import_statement(s, acc.id, BANK_CSV, file_name="feb.csv", actor="o", as_of=D(2026, 4, 1))
+        t1, t2, t3 = svc.bank_txns(s, imp.id)
+        with pytest.raises(svc.ServiceError, match="money in"):
+            svc.record_bank_txn(s, t1.id, taken.id, D(2026, 4, 1))       # money in is not a payment you made
+        with pytest.raises(svc.ServiceError, match="money out"):
+            svc.record_bank_txn(s, t3.id, loan.id, D(2026, 4, 1))        # ATM withdrawal is not Ravi paying
+        with pytest.raises(svc.ServiceError, match="amounts differ"):
+            svc.link_bank_txn(s, t2.id, p1.id)
+
+    def test_bad_files_and_future_lines(self, s):
+        _, _, acc = self._setup(s)
+        with pytest.raises(svc.ServiceError, match="could not read the statement: could not find the column"):
+            svc.import_statement(s, acc.id, b"a,b\n1,2\n", file_name="x.csv", actor="o", as_of=D(2026, 4, 1))
+        with pytest.raises(svc.ServiceError, match="in the future"):
+            svc.import_statement(s, acc.id, BANK_CSV, file_name="x.csv", actor="o", as_of=D(2026, 2, 6))
+
+    def test_bank_figures_are_protected(self, s):
+        _, _, acc = self._setup(s)
+        imp, _ = svc.import_statement(s, acc.id, BANK_CSV, file_name="feb.csv", actor="o", as_of=D(2026, 4, 1))
+        tid = svc.bank_txns(s, imp.id)[0].id
+        for sql, msg in (("UPDATE bank_txn SET amount_paise = 1 WHERE id = :i", "only the decision"),
+                         ("DELETE FROM bank_txn WHERE id = :i", "cannot be deleted"),
+                         ("UPDATE bank_import SET row_count = 0 WHERE id = :m", "append-only")):
+            with pytest.raises(DBAPIError, match=msg):
+                with s.begin_nested():
+                    s.execute(text(sql), {"i": tid, "m": imp.id})
