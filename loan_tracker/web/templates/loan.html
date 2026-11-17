@@ -16,6 +16,7 @@
   <div class="headingActions">
     <a class="btn secondary" href="/reports/statement/{{ loan.id }}">{{ icon("file") }}Statement</a>
     <a class="btn secondary" href="/activity?loan_id={{ loan.id }}">{{ icon("clock") }}History</a>
+    {% if live_status not in ("CLOSED", "SETTLED", "WRITTEN_OFF") %}<a class="btn secondary" href="/simulate?loan_id={{ loan.id }}">{{ icon("spark") }}What if…</a>{% endif %}
     {% if can_close %}<a class="btn" href="/loans/{{ loan.id }}/closure">{{ icon("check") }}No-dues certificate</a>{% endif %}
     {% if given %}{% if wa %}<a class="btn wa" href="{{ wa }}" target="_blank" rel="noopener">{{ icon("chat") }}WhatsApp reminder</a>
     {% else %}<a class="btn secondary" href="/parties/{{ loan.party_id }}" title="Add a mobile number to send WhatsApp reminders">{{ icon("chat") }}Add phone for WhatsApp</a>{% endif %}{% endif %}

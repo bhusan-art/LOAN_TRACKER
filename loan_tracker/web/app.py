@@ -27,9 +27,10 @@ from loan_tracker import auth, reports, services as svc
 from loan_tracker.config import Settings, get_settings, today as clock_today
 from loan_tracker.db import models as m
 from loan_tracker.db.session import session_factory
+from loan_tracker.engine.calendar import _add_months as add_months
 from loan_tracker.web import formatting as fmt
 from loan_tracker.web.schemas import (CashAccountIn, CashBalanceIn, ContactIn, EntryIn, FundingIn, LoanIn,
-                                      PartyIn, PlannedIn, ReverseIn, describe)
+                                      PartyIn, PlannedIn, ReverseIn, SimulateLoanIn, SimulateNewIn, describe)
 
 HERE = Path(__file__).resolve().parent
 BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
@@ -128,11 +129,15 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         if request.session.get("user"):
             with app.state.maker() as s2:
                 nav_overdue = s2.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
-        ctx.update(request=request, book=book_of(request), today=app.state.today(),
-                   flash=request.session.pop("flash", None), error=request.session.pop("error", None),
-                   user=request.session.get("user"), csrf=csrf_token(request),
-                   nav_overdue=nav_overdue, insecure_secret=insecure_secret)
-        return templates.TemplateResponse(request, name, ctx)
+        base = dict(request=request, book=book_of(request), today=app.state.today(),
+                    flash=request.session.pop("flash", None), error=request.session.pop("error", None),
+                    user=request.session.get("user"), csrf=csrf_token(request),
+                    nav_overdue=nav_overdue, insecure_secret=insecure_secret)
+        if ctx.get("error") is None:           # a page's own error message wins; never drop either
+            ctx.pop("error", None)
+        elif base["error"]:
+            ctx["error"] = f"{base['error']} {ctx['error']}"
+        return templates.TemplateResponse(request, name, base | ctx)
 
     def safe_path(url: str | None, default: str = "/") -> str:
         """Only ever redirect within this site: keep the path (and query) of
@@ -505,6 +510,45 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         weeks = reports.calendar_weeks(cal, t, t + timedelta(days=days))
         return render(request, "calendar.html", cal=cal, days=days, totals=totals, weeks=weeks, f=f)
 
+    @app.get("/simulate", response_class=HTMLResponse)
+    def simulate_page(request: Request, mode: str = "loan", loan_id: str = "", kind: str = "EXTRA_PAYMENT",
+                      on: str = "", amount: str = "", rate: str = "", months: str = "1", horizon: int = 6,
+                      direction: str = "GIVEN", loan_book: str = "BUSINESS", start: str = "", due_day: str = "",
+                      maturity: str = "", days: int = 60, run: str = "", _: str = Depends(user),
+                      s: Session = Depends(db)):
+        """GET only: nothing is saved, so results can be bookmarked and no CSRF token is needed."""
+        from loan_tracker.simulator import KINDS, Scenario
+        t = today()
+        horizon = horizon if horizon in (3, 6, 12, 24) else 6
+        days = days if days in (30, 60, 90, 180) else 60
+        loans = [r for r in svc.portfolio(s, t) if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
+        form = {"mode": mode, "loan_id": loan_id, "kind": kind if kind in KINDS else "EXTRA_PAYMENT",
+                "on": on or t.isoformat(), "amount": amount, "rate": rate, "months": months, "horizon": horizon,
+                "direction": direction, "loan_book": loan_book, "start": start or t.isoformat(), "due_day": due_day,
+                "maturity": maturity, "days": days}
+        result = new = error = None
+        if run:
+            try:
+                if mode == "new":
+                    new = reports.simulate_new_loan(
+                        s, t, days, direction=direction if direction in ("GIVEN", "TAKEN") else "GIVEN",
+                        book=loan_book if loan_book in ("BUSINESS", "PERSONAL") else "BUSINESS",
+                        principal_paise=svc.rupees_to_paise(amount or "0"), rate=svc.parse_rate(rate or "0"),
+                        start_date=parse_date(start, t), due_day=int(due_day) if due_day.isdigit() else
+                        parse_date(start, t).day, maturity_date=parse_date(maturity, None) if maturity else None,
+                        buffer_paise=settings.cash_buffer_paise)
+                else:
+                    if not loan_id.isdigit():
+                        raise svc.ServiceError("choose a loan")
+                    sc = Scenario(form["kind"], parse_date(on, t),
+                                  amount_paise=svc.rupees_to_paise(amount) if amount else 0,
+                                  new_rate=svc.parse_rate(rate) if rate else None,
+                                  months=int(months) if months.isdigit() else 0)
+                    result = reports.simulate_loan(s, int(loan_id), t, add_months(t, horizon), sc)
+            except svc.ServiceError as exc:
+                error = str(exc)
+        return render(request, "simulate.html", form=form, loans=loans, result=result, new=new, sim_error=error)
+
     @app.get("/cash", response_class=HTMLResponse)
     def cash_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
         days = days if days in (30, 60, 90) else 30
@@ -787,6 +831,41 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         it = svc.cancel_planned_item(s, item_id)
         log(request, s, "PLAN_CANCELLED", "planned_cash_item", it.id, note=it.description, via="api")
         return {"id": it.id, "cancelled": True}
+
+    def projection_json(p) -> dict:
+        return {"interest_paise": p.interest_paise, "payments_paise": p.payments_paise,
+                "topups_paise": p.topups_paise, "principal_left_paise": p.principal_left_paise,
+                "interest_left_paise": p.interest_left_paise, "payoff_paise": p.payoff_paise,
+                "effective_rate": str(p.effective_rate), "closed_on": str(p.closed_on) if p.closed_on else None,
+                "dues": [{"due_date": str(d.due_date), "interest_paise": d.interest_paise, "paid": d.paid}
+                         for d in p.dues]}
+
+    @app.post("/api/simulate/loan")
+    def api_simulate_loan(payload: SimulateLoanIn, _: str = Depends(user), s: Session = Depends(db)):
+        from loan_tracker.simulator import Scenario
+        t = today()
+        sim = reports.simulate_loan(s, payload.loan_id, t, add_months(t, payload.horizon_months),
+                                    Scenario(payload.kind, payload.on or t, amount_paise=payload.amount_paise or 0,
+                                             new_rate=payload.new_rate, months=payload.months or 0))
+        return {"loan_id": payload.loan_id, "today": str(t), "horizon": str(sim.horizon),
+                "actual": projection_json(sim.actual), "simulated": projection_json(sim.simulated),
+                "links": [{"link_id": e.link.id, "other_loan_id": e.other.id,
+                           "exposure_actual_paise": e.exposure_actual, "exposure_simulated_paise": e.exposure_sim,
+                           "spread_actual_paise": e.spread_actual, "spread_simulated_paise": e.spread_sim}
+                          for e in sim.links], "saved": False}
+
+    @app.post("/api/simulate/new-loan")
+    def api_simulate_new(payload: SimulateNewIn, _: str = Depends(user), s: Session = Depends(db)):
+        t = today()
+        sim = reports.simulate_new_loan(s, t, payload.days, direction=payload.direction, book=payload.book,
+                                        principal_paise=payload.principal_paise, rate=payload.rate,
+                                        start_date=payload.start_date or t,
+                                        due_day=payload.due_day or (payload.start_date or t).day,
+                                        maturity_date=payload.maturity_date, buffer_paise=settings.cash_buffer_paise)
+        return {"monthly_interest_paise": sim.monthly_interest_paise,
+                "interest_in_window_paise": sim.interest_in_window_paise,
+                "flows": [{"date": str(d), "amount_paise": a} for d, a in sim.flows],
+                "before": forecast_json(sim.before), "after": forecast_json(sim.after), "saved": False}
 
     @app.get("/api/receipts")
     def api_receipts(loan_id: int | None = None, q: str = "", _: str = Depends(user), s: Session = Depends(db)):

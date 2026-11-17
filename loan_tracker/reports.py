@@ -617,6 +617,7 @@ class LoanSimulation:
     actual: object                 # simulator.Projection
     simulated: object
     links: list[LinkEffect] = field(default_factory=list)
+    arrears_today_paise: int = 0   # unpaid interest (and penalty) today: any extra money clears it first
 
 
 def _rate_on(terms: eng.LoanTerms, entries, d: date):
@@ -645,7 +646,9 @@ def simulate_loan(s: Session, loan_id: int, today: date, horizon: date, scenario
         simulated = sim.project(terms, entries, today, horizon, scenario)
     except ValueError as exc:
         raise ServiceError(str(exc)) from exc
-    out = LoanSimulation(loan, today, horizon, scenario, actual, simulated)
+    now = compute_loan(loan, today).balances
+    out = LoanSimulation(loan, today, horizon, scenario, actual, simulated,
+                         arrears_today_paise=now.interest_outstanding_paise + now.penalty_outstanding_paise)
     for l in funding_links(s):
         if loan.id not in (l.given_loan_id, l.taken_loan_id):
             continue

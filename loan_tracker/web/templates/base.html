@@ -19,7 +19,7 @@
     <a class="brand" href="/"><span class="brandmark">◈</span>ledgerly<span style="color:var(--brand)">.</span></a>
     <div class="navtitle">Workspace</div>
     <nav class="nav">
-      {% for href, label, ic in [("/", "Overview", "dashboard"), ("/loans", "Loans", "wallet"), ("/collections", "Collections", "phone"), ("/receipts", "Receipts", "file"), ("/parties", "People", "people"), ("/cash", "Cash & forecast", "wallet"), ("/calendar", "Cash calendar", "calendar"), ("/reports", "Reports", "chart"), ("/funding", "Funding links", "link"), ("/activity", "Activity log", "clock")] %}
+      {% for href, label, ic in [("/", "Overview", "dashboard"), ("/loans", "Loans", "wallet"), ("/collections", "Collections", "phone"), ("/receipts", "Receipts", "file"), ("/parties", "People", "people"), ("/cash", "Cash & forecast", "wallet"), ("/simulate", "What-if", "spark"), ("/calendar", "Cash calendar", "calendar"), ("/reports", "Reports", "chart"), ("/funding", "Funding links", "link"), ("/activity", "Activity log", "clock")] %}
       <a href="{{ href }}" class="{{ 'active' if (href == '/' and path == '/') or (href != '/' and path.startswith(href)) }}">{{ icon(ic) }}{{ label }}
         {% if href == "/loans" and nav_overdue %}<span class="numb">{{ nav_overdue }}</span>{% endif %}</a>
       {% endfor %}

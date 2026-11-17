@@ -107,6 +107,27 @@ class PlannedIn(_Body):
     description: Annotated[str, Field(min_length=1, max_length=200)]
 
 
+class SimulateLoanIn(_Body):
+    loan_id: Annotated[StrictInt, Field(gt=0)]
+    kind: Literal["EXTRA_PAYMENT", "PAYOFF", "RATE_CHANGE", "MISS", "TOPUP"]
+    on: date | None = None                  # default: today
+    amount_paise: Paise | None = None       # EXTRA_PAYMENT, TOPUP
+    new_rate: Rate | None = None            # RATE_CHANGE
+    months: Annotated[StrictInt, Field(ge=1, le=24)] | None = None   # MISS
+    horizon_months: Literal[3, 6, 12, 24] = 6
+
+
+class SimulateNewIn(_Body):
+    direction: Literal["GIVEN", "TAKEN"]
+    book: Literal["BUSINESS", "PERSONAL"]
+    principal_paise: Paise
+    rate: Rate
+    start_date: date | None = None
+    due_day: Annotated[StrictInt, Field(ge=1, le=31)] | None = None
+    maturity_date: date | None = None
+    days: Literal[30, 60, 90, 180] = 60
+
+
 def describe(errors: list[dict]) -> str:
     """One readable line from pydantic errors: 'book: Input should be ...; rate: ...'."""
     parts = []

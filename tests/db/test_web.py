@@ -349,3 +349,44 @@ def test_cash_pages_and_api(client):
     assert client.post(f"/api/cash/accounts/{acc}/balance", json={"balance_paise": 5}).status_code == 201
     log = client.get("/activity").text
     assert "Account added" in log and "Balance updated" in log and "Plan added" in log and "Plan cancelled" in log
+
+
+def test_simulator_page_and_api(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 10_000_000, "start_date": "2026-04-01", "rate": "2",
+                                          "due_day": 1}).json()["id"]
+    assert "What if…" in client.get(f"/loans/{lid}").text
+    page = client.get(f"/simulate?mode=loan&run=1&loan_id={lid}&kind=EXTRA_PAYMENT&on=2026-05-01"
+                      f"&amount=50%2C000&horizon=6").text
+    assert "nothing here is saved" in page and "Interest you earn" in page
+    assert "−₹5,000.00" in page        # Jun-Oct dues on half the principal: Rs 1,000 less each
+    entries_before = len(client.get(f"/api/loans/{lid}/entries").json())
+    r = client.post("/api/simulate/loan", json={"loan_id": lid, "kind": "EXTRA_PAYMENT", "on": "2026-05-01",
+                                                "amount_paise": 5_000_000, "horizon_months": 6}).json()
+    assert r["saved"] is False and r["actual"]["interest_paise"] - r["simulated"]["interest_paise"] == 500_000
+    assert len(client.get(f"/api/loans/{lid}/entries").json()) == entries_before
+    bad = client.get(f"/simulate?mode=loan&run=1&loan_id={lid}&kind=TOPUP&on=2026-05-01").text
+    assert "the amount must be more than zero" in bad
+    assert client.post("/api/simulate/loan", json={"loan_id": lid, "kind": "LATER"}).status_code == 400
+    new = client.get("/simulate?mode=new&run=1&direction=GIVEN&amount=1%2C00%2C000&rate=2&start=2026-04-15"
+                     "&due_day=1&loan_book=PERSONAL&days=60").text
+    assert '<a href="/book/all" class="selected"' in new      # the top-bar book switch is untouched
+    assert "Interest a month" in new and "₹2,000.00" in new and "No cash accounts yet" in new
+    api = client.post("/api/simulate/new-loan", json={"direction": "GIVEN", "book": "BUSINESS",
+                                                      "principal_paise": 10_000_000, "rate": "2",
+                                                      "start_date": "2026-04-15", "due_day": 1}).json()
+    assert api["flows"][0] == {"date": "2026-04-15", "amount_paise": -10_000_000}
+    assert api["after"]["expected"]["short_date"] == "2026-04-15"
+
+
+
+def test_simulator_explains_arrears_first(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Late"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 10_000_000, "start_date": "2026-01-01", "rate": "2",
+                                          "due_day": 1}).json()["id"]
+    page = client.get(f"/simulate?mode=loan&run=1&loan_id={lid}&kind=EXTRA_PAYMENT&on=2026-05-01&amount=50000").text
+    assert "₹6,000.00 of interest is unpaid today" in page

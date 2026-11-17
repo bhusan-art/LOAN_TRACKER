@@ -80,6 +80,14 @@
   plans; calendar starts from the real balance. rupees_to_paise rejects Infinity/NaN.
   Sidebar scrolls. 193 tests.
 
+- Phase 12 (what-if): simulator.py (pure) runs the engine on copies (negative-id
+  entries, nothing saved); interest assumed paid on each due date in both paths;
+  extra payment, payoff, rate change, missed months, top-up; new-loan cash flows.
+  /simulate (GET only) with actual vs what-if, dues, funding-link spread; new-loan
+  mode shows cash forecast before/after. JSON /api/simulate/*. render() no longer
+  overwrites a page's own error. 211 tests.
+
 ## Next step
-V2 plan: Phase 12 what-if simulator.
+V2 plan (phases 8-12) complete. Deferred ideas: bank statement import, encrypted
+document storage, application/approval workflow, official WhatsApp API.
 
