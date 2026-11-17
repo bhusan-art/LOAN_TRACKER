@@ -226,3 +226,29 @@ def test_collections_pages_and_api(client):
     assert len(client.get("/api/collections").json()["follow_ups"]) == 0   # follow-up date not reached
     log = client.get("/activity").text
     assert "Contact logged" in log and "Promise made" in log and "Promise cancelled" in log
+
+
+PUBLIC = {"/healthz", "/manifest.webmanifest", "/sw.js", "/login", "/logout", "/book/{name}"}
+
+
+def test_every_route_needs_login(client):
+    """Regression guard: a new page or API route that forgets Depends(user) fails here."""
+    checked = 0
+    for route in client.app.routes:
+        path = getattr(route, "path", "")
+        if path in PUBLIC or path.startswith("/static") or not getattr(route, "methods", None):
+            continue
+        url = re.sub(r"\{[^}]+\}", "1", path)
+        for method in route.methods - {"HEAD", "OPTIONS"}:
+            r = client.request(method, url, follow_redirects=False, json={} if path.startswith("/api") else None)
+            assert r.status_code in (401, 303, 302, 403), f"{method} {path} -> {r.status_code}"
+            if r.status_code in (302, 303):
+                assert "/login" in r.headers["location"] or method == "POST", f"{method} {path}"
+            checked += 1
+    assert checked > 40
+
+
+def test_api_docs_after_login(client):
+    login(client)
+    assert "/api/loans" in client.get("/api/openapi.json").json()["paths"]
+    assert client.get("/api/docs").status_code == 200

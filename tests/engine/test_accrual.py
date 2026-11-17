@@ -7,7 +7,7 @@ import pytest
 
 from loan_tracker.engine import accrue, compute
 from loan_tracker.engine.accrual import net_rate
-from tests.engine.helpers import D, P, disburse, entry, pay, terms
+from tests.engine.helpers import D, disburse, entry, pay, terms
 
 
 def dues_of(t, entries, as_of):

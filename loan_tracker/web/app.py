@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -42,7 +42,8 @@ class LoginRequired(Exception):
 def create_app(settings: Settings | None = None, *, maker: sessionmaker | None = None,
                today_fn: Callable[[], date] | None = None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="Loan Tracker", docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
+    # API docs are served below behind the login, not publicly
+    app = FastAPI(title="Loan Tracker", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.maker = maker or session_factory(settings.database_url)
     app.state.today = today_fn or (lambda: clock_today(settings))
@@ -603,6 +604,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             given_loan_id=link.given_loan_id, amount_paise=link.amount_paise, via="api")
         return {"id": link.id}
 
+    @app.get("/api/openapi.json", include_in_schema=False)
+    def api_schema(_: str = Depends(user)):
+        from fastapi.openapi.utils import get_openapi
+        return get_openapi(title=app.title, version="1", routes=app.routes)
+
+    @app.get("/api/docs", include_in_schema=False)
+    def api_docs(_: str = Depends(user)):
+        from fastapi.openapi.docs import get_swagger_ui_html
+        return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Loan Tracker API")
+
     @app.get("/api/collections")
     def api_collections(request: Request, _: str = Depends(user), s: Session = Depends(db)):
         return jsonable(reports.collections_overview(s, today(), BOOKS[book_of(request)]))
@@ -679,7 +690,6 @@ def _paid_on_time(rows, due_status) -> bool:
         last = max((dates[a.entry_id] for a in r.result.allocations
                     if a.bucket == "INTEREST" and a.due_period_start == due_status.due.period_start),
                    default=None)
-        from datetime import timedelta
         return last is not None and last <= due_status.due.due_date + timedelta(days=r.loan.grace_days)
     return False
 

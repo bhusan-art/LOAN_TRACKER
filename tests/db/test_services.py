@@ -257,7 +257,7 @@ class TestCollections:
 class TestCollectionsOverview:
     def test_who_to_chase(self, s):
         loan = make_loan(s, name="Ravi")
-        quiet = make_loan(s, name="Quiet")
+        make_loan(s, name="Quiet")
         ov = reports.collections_overview(s, D(2026, 2, 10))
         assert {i.party for i in ov.not_contacted} == {"Ravi", "Quiet"}
         assert ov.not_contacted[0].overdue_paise == 200_000
@@ -287,3 +287,30 @@ class TestCollectionsOverview:
         s.expire_all()
         url = reports.collections_overview(s, D(2026, 2, 10)).not_contacted[0].wa_url
         assert url.startswith("https://wa.me/919848012345?text=Hello%20Ravi")
+
+
+class TestLoanRowLock:
+    """Writes lock the loan row so concurrent writes to one loan run in turn."""
+
+    def _sql(self, s, fn):
+        from sqlalchemy import event
+        seen = []
+        conn = s.connection()
+        listen = lambda *a: seen.append(a[2])
+        event.listen(conn, "before_cursor_execute", listen)
+        try:
+            fn()
+        finally:
+            event.remove(conn, "before_cursor_execute", listen)
+        return seen
+
+    def test_payment_reversal_and_status_lock_the_loan(self, s):
+        loan = make_loan(s)
+        locked = lambda sql: any("FROM loan" in q and "FOR UPDATE" in q for q in sql)
+        holder = {}
+        sql = self._sql(s, lambda: holder.update(e=svc.post_entry(
+            s, loan.id, type="PAYMENT", entry_date=D(2026, 2, 1), amount_paise=100, as_of=D(2026, 2, 1))[0]))
+        assert locked(sql)
+        assert locked(self._sql(s, lambda: svc.reverse_entry(s, holder["e"].id, entry_date=D(2026, 2, 2),
+                                                             as_of=D(2026, 2, 2))))
+        assert locked(self._sql(s, lambda: svc.set_owner_status(s, loan.id, "SETTLED", D(2026, 2, 2))))

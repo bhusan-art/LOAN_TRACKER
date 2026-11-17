@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
@@ -132,10 +132,16 @@ def get_party(s: Session, party_id: int) -> m.Party:
 # ---------------------------------------------------------------------------
 # loans
 # ---------------------------------------------------------------------------
-def get_loan(s: Session, loan_id: int) -> m.Loan:
+def get_loan(s: Session, loan_id: int, *, lock: bool = False) -> m.Loan:
+    """lock=True: SELECT ... FOR UPDATE on the loan row first, so two writes to the
+    same loan (phone and PC at the same moment) run one after the other and each
+    rebuilds the due/allocation cache from every committed entry."""
+    if lock:
+        s.execute(select(m.Loan.id).where(m.Loan.id == loan_id).with_for_update())
     loan = s.scalars(
         select(m.Loan).where(m.Loan.id == loan_id)
         .options(selectinload(m.Loan.entries), selectinload(m.Loan.party))
+        .execution_options(populate_existing=lock)
     ).first()
     if loan is None:
         raise ServiceError(f"loan {loan_id} not found")
@@ -193,7 +199,7 @@ def post_entry(
 ) -> tuple[m.LedgerEntry, eng.EngineResult]:
     """Append one ledger entry (PAYMENT, TOPUP, WAIVER, PENALTY, RATE_CHANGE)
     and recompute. Returns the entry and the loan's engine result."""
-    loan = get_loan(s, loan_id)
+    loan = get_loan(s, loan_id, lock=True)
     if type not in ENTRY_TYPES_POSTABLE:
         raise ServiceError(f"cannot post {type} entries here")
     if loan.status in OWNER_STATUSES:
@@ -233,6 +239,7 @@ def reverse_entry(s: Session, entry_id: int, *, entry_date: date, as_of: date,
         raise ServiceError("a reversal cannot itself be reversed")
     if original.type == "DISBURSE":
         raise ServiceError("the disbursement cannot be reversed; mark the loan SETTLED or WRITTEN_OFF")
+    get_loan(s, original.loan_id, lock=True)   # also makes the 'already reversed' check race-free
     already = s.scalar(select(m.LedgerEntry.id).where(m.LedgerEntry.reverses_id == entry_id))
     if already:
         raise ServiceError(f"entry {entry_id} is already reversed")
@@ -248,7 +255,7 @@ def reverse_entry(s: Session, entry_id: int, *, entry_date: date, as_of: date,
 
 def set_owner_status(s: Session, loan_id: int, status: str | None, as_of: date) -> m.Loan:
     """Owner decisions: SETTLED / WRITTEN_OFF, or None to hand status back to the engine."""
-    loan = get_loan(s, loan_id)
+    loan = get_loan(s, loan_id, lock=True)
     if status is not None and status not in OWNER_STATUSES:
         raise ServiceError("status must be SETTLED, WRITTEN_OFF or empty")
     loan.status = status or "ACTIVE"

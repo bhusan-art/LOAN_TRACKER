@@ -19,7 +19,7 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from loan_tracker import engine as eng, reports, services as svc
+from loan_tracker import reports, services as svc
 from loan_tracker.config import Settings
 from loan_tracker.db import models as m
 from loan_tracker.web.formatting import dmy, inr

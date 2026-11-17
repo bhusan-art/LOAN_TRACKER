@@ -1,7 +1,7 @@
 """Payment waterfall, reversals, payoff and credit (engine.md §3.2, §5;
 DECISIONS #11, #13)."""
 from loan_tracker.engine import compute
-from tests.engine.helpers import D, P, disburse, entry, example_a, pay, terms
+from tests.engine.helpers import D, disburse, entry, example_a, pay, terms
 
 
 def rows(res, entry_id):
