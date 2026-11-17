@@ -5,14 +5,14 @@
 {% block content %}
 <div class="heading">
   <div><div class="eyebrow">Planning</div><h1>Cash calendar</h1>
-    <p class="subtitle">Expected interest (and principal at maturity), assuming no other payments. Unpaid past dues show on today.</p></div>
+    <p class="subtitle">Expected interest (and principal at maturity), assuming no other payments, plus your planned items. Unpaid past dues show on today.</p></div>
   <nav class="tabs" aria-label="Window">{% for n in [30, 60, 90] %}<a class="{{ 'active' if n == days }}" href="?days={{ n }}">{{ n }} days</a>{% endfor %}</nav>
 </div>
 <div class="stats">
   {{ stat("Expected collections", totals.in|inr(decimals=False), "Next " ~ days ~ " days incl. arrears", "down") }}
   {{ stat("Expected payments", totals.out|inr(decimals=False), "Next " ~ days ~ " days incl. arrears", "up") }}
   {{ stat("Projected net", totals.net|inr(decimals=False), "Collections − payments", "chart") }}
-  {{ stat("Lowest running total", totals.low|inr(decimals=False), ("Goes negative on " ~ (totals.low_day|dmy)) if totals.low_day else "Never below ₹0 in this window", "clock") }}
+  {{ stat("Lowest balance", totals.low|inr(decimals=False), ("Short from " ~ (totals.low_day|dmy)) if totals.low_day else ("Starting from " ~ (f.opening_paise|inr(decimals=False)) ~ " in your accounts" if f.has_accounts else "Starting from ₹0 · add accounts on Cash"), "clock") }}
 </div>
 <div class="two">
   <div class="card">
@@ -33,16 +33,18 @@
     </div>
   </div>
   <div class="card">
-    <div class="cardhead"><h2>Scheduled</h2><span class="muted tiny">Running total starts at ₹0</span></div>
+    <div class="cardhead"><h2>Scheduled</h2><span class="muted tiny">{% if f.has_accounts %}Starts from {{ f.opening_paise|inr(decimals=False) }} in your accounts{% else %}Running total starts at ₹0 · <a class="link" href="/cash">add accounts</a>{% endif %}</span></div>
     {% for day in cal %}
       {% for i in day.money_in %}
       <div class="listitem"><div class="bubble">{{ day.day.day }}</div>
-        <a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Collection · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>
-        <div class="right"><b class="pos num">+{{ i.amount_paise|inr }}</b><br><small>{{ day.day|dmy }}</small></div></div>
+        {% if i.status == "PLANNED" %}<a class="cover" href="/cash"><strong>{{ i.party }}</strong><small>Planned · {{ i.book|title }}</small></a>
+        {% else %}<a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Collection · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>{% endif %}
+        <div class="right"><b class="pos num">+{{ i.amount_paise|inr }}</b><br><small>running {{ day.running_paise|inr(decimals=False) }}</small></div></div>
       {% endfor %}
       {% for i in day.money_out %}
       <div class="listitem"><div class="bubble red">{{ day.day.day }}</div>
-        <a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Payment · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>
+        {% if i.status == "PLANNED" %}<a class="cover" href="/cash"><strong>{{ i.party }}</strong><small>Planned · {{ i.book|title }}</small></a>
+        {% else %}<a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Payment · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>{% endif %}
         <div class="right"><b class="negv num">−{{ i.amount_paise|inr }}</b><br><small>running {{ day.running_paise|inr(decimals=False) }}</small></div></div>
       {% endfor %}
     {% else %}{{ empty("Nothing expected in this window.", "calendar") }}{% endfor %}

@@ -66,3 +66,9 @@ tr.reversedrow td{color:var(--muted)}tr.reversedrow .num{text-decoration:line-th
 @media(max-width:800px){.docfoot .sign{min-width:160px;margin-left:auto}.doc{padding:22px 18px}.dochead{flex-direction:column}.docmeta{text-align:left}.docamount{font-size:28px}}
 @page{margin:14mm}
 @media print{.doc{max-width:none;padding:0 6px;border:0}.doc .dochead{flex-direction:row}.doc .docmeta{text-align:right}.doc .docamount{font-size:32px}.doc .two.equal{grid-template-columns:1fr 1fr}.doc .stamp{opacity:.3}.docsplit{display:grid;grid-template-columns:1fr 1fr}}
+
+/* Phase 11: cash */
+form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 10px}
+form.inline input{border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:8px 10px;color:var(--text);min-width:0;flex:1 1 120px}
+.acct details.more summary{margin-top:8px}
+.sidebar{overflow-y:auto}

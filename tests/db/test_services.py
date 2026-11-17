@@ -500,3 +500,13 @@ class TestCashForecast:
         db = reports.dashboard(s, t, "BUSINESS")
         assert any(w.startswith("Cash: you may be ₹193.55 short on 05 Jan 2026") for w in db.warning_text)
         assert not any(w.startswith("Cash:") for w in reports.dashboard(s, t).warning_text)  # Home cash covers it
+
+
+@pytest.mark.parametrize("bad", ["Infinity", "-inf", "NaN", "abc", "1.005"])
+def test_rupees_to_paise_rejects_non_amounts(bad):
+    with pytest.raises(svc.ServiceError):
+        svc.rupees_to_paise(bad)
+
+
+def test_rupees_to_paise_negative_for_overdraft():
+    assert svc.rupees_to_paise("-5,000.50") == -500_050

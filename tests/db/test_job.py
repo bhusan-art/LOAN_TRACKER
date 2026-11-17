@@ -83,3 +83,11 @@ def test_follow_up_section(s):
     assert "[PER] Broken promise: Ravi owed ₹3,225.81 by 22 Jan 2026, ₹3,225.81 short" in text
     muted = replace(SETTINGS, mute_books=frozenset({"PERSONAL"}))
     assert "FOLLOW UP" not in build_digest(s, D(2026, 1, 23), muted).text()
+
+
+def test_cash_shortfall_in_digest(s):
+    setup_loans(s)
+    svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=10_000,
+                            as_of=D(2026, 1, 2))
+    text = build_digest(s, D(2026, 1, 2), SETTINGS).text()
+    assert "Cash: you may be ₹93.55 short on 05 Jan 2026, even if everyone pays on time." in text

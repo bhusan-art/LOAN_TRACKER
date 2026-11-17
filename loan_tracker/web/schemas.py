@@ -83,6 +83,30 @@ class ContactIn(_Body):
     promise_date: date | None = None             # outcome PROMISED only
 
 
+SignedPaise = Annotated[StrictInt, Field(ge=-10**15, le=10**15)]
+
+
+class CashAccountIn(_Body):
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+    kind: Literal["BANK", "CASH", "WALLET"] = "BANK"
+    book: Literal["BUSINESS", "PERSONAL"]
+    balance_paise: SignedPaise = 0          # negative = overdraft
+
+
+class CashBalanceIn(_Body):
+    balance_paise: SignedPaise
+    on: date | None = None                  # default: today
+    note: Text | None = None
+
+
+class PlannedIn(_Body):
+    book: Literal["BUSINESS", "PERSONAL"]
+    item_date: date
+    direction: Literal["IN", "OUT"]
+    amount_paise: Paise
+    description: Annotated[str, Field(min_length=1, max_length=200)]
+
+
 def describe(errors: list[dict]) -> str:
     """One readable line from pydantic errors: 'book: Input should be ...; rate: ...'."""
     parts = []

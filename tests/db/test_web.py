@@ -311,3 +311,41 @@ def test_receipt_issuer_name_from_settings(s):
     assert "Example Finance" in c.get(f"/receipts/{biz['id']}").text
     page = c.get(f"/receipts/{per['id']}").text
     assert "A. Owner" in page and "Main Road · 98480 00000" in page and "RECEIPT_NAME" not in page
+
+
+def test_cash_pages_and_api(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Suresh"}).json()["id"]
+    client.post("/api/loans", json={"party_id": pid, "direction": "TAKEN", "book": "BUSINESS",
+                                    "principal_paise": 10_000_000, "start_date": "2026-03-05", "rate": "1.5",
+                                    "due_day": 5})
+    page = client.get("/cash").text
+    assert "Add your bank and cash accounts below" in page
+    r = post(client, "/cash/accounts", {"name": "SBI", "kind": "BANK", "book": "BUSINESS", "balance": "1,000"},
+             page="/cash")
+    assert "Account SBI added." in r.text
+    data = client.get("/api/cash").json()
+    assert data["opening_paise"] == 100_000 and data["accounts"][0]["name"] == "SBI"
+    # Suresh's Rs 1,500 on 5 Apr is more than the Rs 1,000 in the bank
+    assert (data["expected"]["short_date"], data["expected"]["short_paise"]) == ("2026-04-05", 50_000)
+    assert "Cash: you may be ₹500.00 short on 05 Apr 2026" in client.get("/cash").text
+    assert "Cash: you may be ₹500.00 short" in client.get("/").text          # dashboard warning
+    acc = data["accounts"][0]["id"]
+    post(client, f"/cash/accounts/{acc}/balance", {"balance": "-2,000", "on": "2026-04-01"}, page="/cash")
+    assert client.get("/api/cash").json()["opening_paise"] == -200_000
+    r = post(client, "/cash/planned", {"description": "FD maturing", "amount": "5,000", "item_date": "2026-04-03",
+                                       "direction": "IN", "book": "BUSINESS"}, page="/cash")
+    assert "FD maturing" in r.text
+    assert client.get("/api/cash").json()["expected"]["short_date"] == "2026-04-01"   # overdrawn today
+    cal = client.get("/calendar").text
+    assert "FD maturing" in cal and "Planned · Business" in cal and "Starts from" in cal
+    # API with typed bodies
+    bad = client.post("/api/cash/planned", json={"book": "BUSINESS", "item_date": "2026-04-03",
+                                                 "direction": "SIDEWAYS", "amount_paise": 1, "description": "x"})
+    assert bad.status_code == 400 and "direction" in bad.json()["detail"]
+    pl = client.post("/api/cash/planned", json={"book": "BUSINESS", "item_date": "2026-04-03", "direction": "OUT",
+                                                "amount_paise": 100, "description": "tea"}).json()["id"]
+    assert client.post(f"/api/cash/planned/{pl}/cancel").json()["cancelled"]
+    assert client.post(f"/api/cash/accounts/{acc}/balance", json={"balance_paise": 5}).status_code == 201
+    log = client.get("/activity").text
+    assert "Account added" in log and "Balance updated" in log and "Plan added" in log and "Plan cancelled" in log

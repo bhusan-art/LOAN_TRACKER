@@ -73,6 +73,13 @@
   words, WhatsApp share), receipts list, no-dues certificate (CLOSED/SETTLED).
   Issuer from RECEIPT_NAME / RECEIPT_BUSINESS_NAME / RECEIPT_DETAILS. 172 tests.
 
+- Phase 11 (cash): migration 0005 cash_account, cash_balance (append-only),
+  planned_cash_item (cancel-only). cashflow.forecast (pure); reports.cash_forecast
+  (expected + cautious without late borrowers), shortfall/stale warnings on the
+  dashboard and digest, CASH_MIN_BALANCE floor. /cash page with chart, accounts,
+  plans; calendar starts from the real balance. rupees_to_paise rejects Infinity/NaN.
+  Sidebar scrolls. 193 tests.
+
 ## Next step
-V2 plan: Phase 11 cash accounts + shortfall warnings, 12 what-if simulator.
+V2 plan: Phase 12 what-if simulator.
 

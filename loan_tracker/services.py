@@ -80,6 +80,8 @@ def rupees_to_paise(value: str | int | Decimal) -> int:
         d = Decimal(str(value).replace(",", "").replace("₹", "").strip())
     except InvalidOperation as exc:
         raise ServiceError(f"not an amount: {value!r}") from exc
+    if not d.is_finite():
+        raise ServiceError(f"not an amount: {value!r}")
     paise = d * 100
     if paise != paise.to_integral_value():
         raise ServiceError(f"amount has more than 2 decimal places: {value!r}")

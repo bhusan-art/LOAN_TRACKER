@@ -28,7 +28,8 @@ from loan_tracker.config import Settings, get_settings, today as clock_today
 from loan_tracker.db import models as m
 from loan_tracker.db.session import session_factory
 from loan_tracker.web import formatting as fmt
-from loan_tracker.web.schemas import ContactIn, EntryIn, FundingIn, LoanIn, PartyIn, ReverseIn, describe
+from loan_tracker.web.schemas import (CashAccountIn, CashBalanceIn, ContactIn, EntryIn, FundingIn, LoanIn,
+                                      PartyIn, PlannedIn, ReverseIn, describe)
 
 HERE = Path(__file__).resolve().parent
 BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
@@ -54,7 +55,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
     templates.env.filters.update(when=lambda dt: fmt.when(dt, settings.timezone))
-    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style,
+    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style, timedelta=timedelta,
                                  action_labels=fmt.ACTION_LABELS, kind_labels=fmt.KIND_LABELS,
                                  outcome_labels=fmt.OUTCOME_LABELS, promise_labels=fmt.PROMISE_LABELS)
     insecure_secret = (len(settings.secret_key) < 32 or "change-me" in settings.secret_key
@@ -495,15 +496,75 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def calendar_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
         days = days if days in (30, 60, 90) else 30
         t = today()
-        cal = reports.cash_calendar(s, t, days, BOOKS[book_of(request)])
+        f = reports.cash_forecast(s, t, days, BOOKS[book_of(request)], settings.cash_buffer_paise)
+        cal = f.calendar
         tin = sum(i.amount_paise for d in cal for i in d.money_in)
         tout = sum(i.amount_paise for d in cal for i in d.money_out)
-        low = min(cal, key=lambda d: d.running_paise, default=None)
-        totals = {"in": tin, "out": tout, "net": tin - tout,
-                  "low": min(0, low.running_paise) if low else 0,
-                  "low_day": low.day if low and low.running_paise < 0 else None}
+        totals = {"in": tin, "out": tout, "net": tin - tout, "low": f.expected.low_paise,
+                  "low_day": f.expected.short_date}
         weeks = reports.calendar_weeks(cal, t, t + timedelta(days=days))
-        return render(request, "calendar.html", cal=cal, days=days, totals=totals, weeks=weeks)
+        return render(request, "calendar.html", cal=cal, days=days, totals=totals, weeks=weeks, f=f)
+
+    @app.get("/cash", response_class=HTMLResponse)
+    def cash_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
+        days = days if days in (30, 60, 90) else 30
+        t = today()
+        book = BOOKS[book_of(request)]
+        f = reports.cash_forecast(s, t, days, book, settings.cash_buffer_paise)
+        plans = svc.planned_items(s, t, t + timedelta(days=365), book)
+        closed = [a for a, _ in svc.latest_balances(s, book, include_inactive=True) if not a.is_active]
+        return render(request, "cash.html", f=f, days=days, plans=plans, closed=closed,
+                      warnings=reports.cash_warnings(f),
+                      chart=fmt.balance_chart(f.opening_paise, t, t + timedelta(days=days), {
+                          "expected": [(d.day, d.running_paise) for d in f.expected.days],
+                          "cautious": [(d.day, d.running_paise) for d in f.cautious.days]},
+                          settings.cash_buffer_paise))
+
+    @app.post("/cash/accounts", dependencies=[Depends(check_csrf)])
+    def cash_account_create(request: Request, name: str = Form(...), kind: str = Form("BANK"),
+                            book: str = Form("BUSINESS"), balance: str = Form("0"), _: str = Depends(user),
+                            s: Session = Depends(db)):
+        acc = svc.create_cash_account(s, name=name, kind=kind, book=book,
+                                      balance_paise=svc.rupees_to_paise(balance or "0"), as_of=today())
+        log(request, s, "CASH_ACCOUNT_ADDED", "cash_account", acc.id, name=acc.name, book=acc.book,
+            amount_paise=svc.rupees_to_paise(balance or "0"))
+        return back(request, "/cash", flash=f"Account {acc.name} added.")
+
+    @app.post("/cash/accounts/{account_id}/balance", dependencies=[Depends(check_csrf)])
+    def cash_balance_set(account_id: int, request: Request, balance: str = Form(...), on: str = Form(""),
+                         note: str = Form(""), _: str = Depends(user), s: Session = Depends(db)):
+        t = today()
+        b = svc.set_cash_balance(s, account_id, balance_paise=svc.rupees_to_paise(balance),
+                                 on=parse_date(on, t), as_of=t, note=note)
+        log(request, s, "CASH_BALANCE_SET", "cash_account", account_id, amount_paise=b.balance_paise,
+            on=b.as_of, note=b.note)
+        return back(request, "/cash", flash=f"Balance {fmt.inr(b.balance_paise)} saved for {fmt.dmy(b.as_of)}.")
+
+    @app.post("/cash/accounts/{account_id}/active", dependencies=[Depends(check_csrf)])
+    def cash_account_active(account_id: int, request: Request, active: str = Form("0"),
+                            _: str = Depends(user), s: Session = Depends(db)):
+        acc = svc.set_cash_account_active(s, account_id, active == "1")
+        log(request, s, "CASH_ACCOUNT_REOPENED" if acc.is_active else "CASH_ACCOUNT_CLOSED", "cash_account",
+            acc.id, name=acc.name)
+        return back(request, "/cash", flash=f"{acc.name} {'reopened' if acc.is_active else 'closed'}.")
+
+    @app.post("/cash/planned", dependencies=[Depends(check_csrf)])
+    def planned_create(request: Request, description: str = Form(...), amount: str = Form(...),
+                       item_date: str = Form(...), direction: str = Form("OUT"), book: str = Form("BUSINESS"),
+                       _: str = Depends(user), s: Session = Depends(db)):
+        t = today()
+        it = svc.add_planned_item(s, book=book, item_date=parse_date(item_date, t), direction=direction,
+                                  amount_paise=svc.rupees_to_paise(amount), description=description, as_of=t)
+        log(request, s, "PLAN_ADDED", "planned_cash_item", it.id, note=it.description,
+            amount_paise=it.amount_paise, on=it.item_date, type=it.direction)
+        return back(request, referer(request, "/cash"), flash="Planned item added to the forecast.")
+
+    @app.post("/cash/planned/{item_id}/cancel", dependencies=[Depends(check_csrf)])
+    def planned_cancel(item_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        it = svc.cancel_planned_item(s, item_id)
+        log(request, s, "PLAN_CANCELLED", "planned_cash_item", it.id, note=it.description,
+            amount_paise=it.amount_paise)
+        return back(request, referer(request, "/cash"), flash="Planned item cancelled.")
 
     @app.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -675,6 +736,57 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def api_docs(_: str = Depends(user)):
         from fastapi.openapi.docs import get_swagger_ui_html
         return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Loan Tracker API")
+
+    def forecast_json(f) -> dict:
+        def one(x):
+            return {"short_date": str(x.short_date) if x.short_date else None, "short_paise": x.short_paise,
+                    "low_paise": x.low_paise, "low_date": str(x.low_date) if x.low_date else None,
+                    "days": [{"day": str(d.day), "in_paise": d.in_paise, "out_paise": d.out_paise,
+                              "running_paise": d.running_paise} for d in x.days]}
+        return {"as_of": str(f.as_of), "days": f.days, "opening_paise": f.opening_paise,
+                "balances_as_of": str(f.balances_as_of) if f.balances_as_of else None,
+                "stale_days": f.stale_days, "buffer_paise": f.buffer_paise, "risky_in_paise": f.risky_in_paise,
+                "accounts": [{"id": a.id, "name": a.name, "kind": a.kind, "book": a.book,
+                              "balance_paise": b.balance_paise if b else None,
+                              "as_of": str(b.as_of) if b else None} for a, b in f.accounts],
+                "expected": one(f.expected), "cautious": one(f.cautious), "warnings": reports.cash_warnings(f)}
+
+    @app.get("/api/cash")
+    def api_cash(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
+        days = max(1, min(days, 365))
+        return forecast_json(reports.cash_forecast(s, today(), days, BOOKS[book_of(request)],
+                                                   settings.cash_buffer_paise))
+
+    @app.post("/api/cash/accounts", status_code=201)
+    def api_cash_account(request: Request, payload: CashAccountIn, _: str = Depends(user),
+                         s: Session = Depends(db)):
+        acc = svc.create_cash_account(s, as_of=today(), **payload.model_dump())
+        log(request, s, "CASH_ACCOUNT_ADDED", "cash_account", acc.id, name=acc.name, book=acc.book,
+            amount_paise=payload.balance_paise, via="api")
+        return {"id": acc.id}
+
+    @app.post("/api/cash/accounts/{account_id}/balance", status_code=201)
+    def api_cash_balance(request: Request, account_id: int, payload: CashBalanceIn, _: str = Depends(user),
+                         s: Session = Depends(db)):
+        t = today()
+        b = svc.set_cash_balance(s, account_id, balance_paise=payload.balance_paise, on=payload.on or t,
+                                 as_of=t, note=payload.note)
+        log(request, s, "CASH_BALANCE_SET", "cash_account", account_id, amount_paise=b.balance_paise,
+            on=b.as_of, via="api")
+        return {"id": b.id}
+
+    @app.post("/api/cash/planned", status_code=201)
+    def api_planned(request: Request, payload: PlannedIn, _: str = Depends(user), s: Session = Depends(db)):
+        it = svc.add_planned_item(s, as_of=today(), **payload.model_dump())
+        log(request, s, "PLAN_ADDED", "planned_cash_item", it.id, note=it.description,
+            amount_paise=it.amount_paise, on=it.item_date, type=it.direction, via="api")
+        return {"id": it.id}
+
+    @app.post("/api/cash/planned/{item_id}/cancel")
+    def api_planned_cancel(request: Request, item_id: int, _: str = Depends(user), s: Session = Depends(db)):
+        it = svc.cancel_planned_item(s, item_id)
+        log(request, s, "PLAN_CANCELLED", "planned_cash_item", it.id, note=it.description, via="api")
+        return {"id": it.id, "cancelled": True}
 
     @app.get("/api/receipts")
     def api_receipts(loan_id: int | None = None, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
