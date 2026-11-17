@@ -157,3 +157,8 @@ class TestDashboard:
         assert {(r["fy"], r["book"]) for r in fy} == {("FY 2025-26", "PERSONAL"), ("FY 2026-27", "PERSONAL")}
         csv_text = reports.export_csv(s, D(2026, 4, 1))
         assert "PRINCIPAL,30000.00" in csv_text
+
+
+def test_csv_neutralises_formulas(s):
+    make_loan(s, name="=HYPERLINK(\"http://x\")")
+    assert "'=HYPERLINK" in reports.export_csv(s, D(2026, 1, 2))

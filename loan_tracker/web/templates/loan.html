@@ -1,105 +1,132 @@
 {% extends "base.html" %}
-{% block title %}{{ loan.party.name }} · loan {{ loan.id }}{% endblock %}
+{% from "_ui.html" import icon, stat, loan_tag, dir_tag, book_tag, due_tag, empty %}
+{% block title %}LN-{{ loan.id }} · {{ loan.party.name }}{% endblock %}
+{% block crumb %}Loan LN-{{ loan.id }}{% endblock %}
 {% block content %}
 {% set b = r.balances %}
-<section class="card">
-  <h1>{{ "Lent to" if loan.direction == "GIVEN" else "Borrowed from" }}
-    <a href="/parties/{{ loan.party_id }}">{{ loan.party.name }}</a></h1>
-  <p><span class="tag">{{ loan.book|lower }}</span> <span class="status st-{{ loan.status|lower }}">{{ loan.status|lower }}</span></p>
-  <p class="muted">{{ loan.principal_paise|inr(decimals=False) }} on {{ loan.start_date|dmy }} at {{ loan.rate|pct }}
-    {{ "a month" if loan.rate_unit == "PER_MONTH" else "a year" }} · {{ loan.interest_cycle|lower|replace("_", " ") }},
-    due on day {{ loan.due_day }} · grace {{ loan.grace_days }} days
-    {% if loan.maturity_date %}· matures {{ loan.maturity_date|dmy }}{% endif %}</p>
-</section>
+{% set given = loan.direction == "GIVEN" %}
+{% set live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else r.loan_status %}
+<div class="heading">
+  <div>
+    <div class="eyebrow">{{ "Loan given" if given else "Loan taken" }} · LN-{{ loan.id }}</div>
+    <h1>{{ "Lent to" if given else "Borrowed from" }} <a href="/parties/{{ loan.party_id }}" style="color:var(--brand)">{{ loan.party.name }}</a></h1>
+    <p class="subtitle">{{ dir_tag(loan.direction) }} {{ book_tag(loan.book) }} {{ loan_tag(live_status) }}
+      &nbsp;{{ loan.principal_paise|inr(decimals=False) }} on {{ loan.start_date|dmy }} at {{ loan.rate|pct }} {{ "a month" if loan.rate_unit == "PER_MONTH" else "a year" }}</p>
+  </div>
+  <div class="headingActions">
+    <a class="btn secondary" href="/reports/statement/{{ loan.id }}">{{ icon("file") }}Statement</a>
+  </div>
+</div>
 
-<section class="metrics">
-  <div class="metric"><span>Principal outstanding</span><strong>{{ b.principal_outstanding_paise|inr }}</strong></div>
-  <div class="metric"><span>Interest outstanding</span><strong>{{ b.interest_outstanding_paise|inr }}</strong></div>
-  <div class="metric"><span>Interest since last due</span><strong>{{ b.open_period_paise|inr }}</strong></div>
-  <div class="metric strong"><span>Payoff today</span><strong>{{ b.payoff_today_paise|inr }}</strong></div>
-</section>
-{% if b.credit_paise %}<p class="flash ok">Credit held: {{ b.credit_paise|inr }} (overpaid; reverse the payment to refund).</p>{% endif %}
-{% if r.projected_due %}<p class="muted">Next due {{ r.projected_due.due_date|dmy }}: about {{ r.projected_due.interest_paise|inr }}</p>{% endif %}
+<div class="stats">
+  {{ stat("Principal outstanding", b.principal_outstanding_paise|inr, "of " ~ (loan.principal_paise|inr(decimals=False)) ~ " disbursed", "wallet") }}
+  {{ stat("Interest outstanding", b.interest_outstanding_paise|inr, (b.interest_paid_paise|inr) ~ " paid so far", "clock") }}
+  {{ stat("Interest since last due", b.open_period_paise|inr, "Accrued, not yet due", "chart") }}
+  {{ stat("Payoff today", b.payoff_today_paise|inr, "To close the loan on " ~ (today|dmy), "check") }}
+</div>
+{% if b.credit_paise %}<div class="notice" style="margin-bottom:18px">Credit held: {{ b.credit_paise|inr }} was overpaid. Reverse the payment to refund it.</div>{% endif %}
 
-{% if loan.status not in ("SETTLED", "WRITTEN_OFF") %}
-<section class="card">
-  <h2>{{ "Record a payment received" if loan.direction == "GIVEN" else "Record a payment you made" }}</h2>
-  <form method="post" action="/loans/{{ loan.id }}/entries" class="stack">
-    <input type="hidden" name="type" value="PAYMENT">
-    <label>Amount (₹) <input name="amount" inputmode="decimal" required placeholder="{{ b.payoff_today_paise|rupees_input }} pays off"></label>
-    <div class="row">
-      <label>Date <input type="date" name="entry_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}"></label>
-      <label>Mode <select name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></label>
-    </div>
-    <label>Reference / note <input name="reference" placeholder="UPI ref, cheque no."></label>
-    <button>Save payment</button>
-  </form>
-  <details>
-    <summary>Other entries (top-up, rate change, waiver, penalty)</summary>
-    <form method="post" action="/loans/{{ loan.id }}/entries" class="stack">
-      <label>Type <select name="type">
-        <option value="TOPUP">Top-up (more money lent/borrowed)</option>
-        <option value="RATE_CHANGE">Rate change</option>
-        <option value="WAIVER">Waive interest</option>
-        <option value="PENALTY">Late penalty</option></select></label>
-      <label>Amount (₹) <input name="amount" inputmode="decimal" placeholder="Waiver: empty = oldest due in full"></label>
-      <label>New rate (%) <input name="new_rate" inputmode="decimal" placeholder="Rate change only"></label>
-      <label>Date <input type="date" name="entry_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}"></label>
-      <label>Note <input name="note"></label>
-      <button class="secondary">Save entry</button>
+<div class="two">
+  <div class="card">
+    {% if loan.status not in ("SETTLED", "WRITTEN_OFF") %}
+    <div class="cardhead"><h2>{{ "Record a payment received" if given else "Record a payment you made" }}</h2>
+      {% if r.projected_due %}<span class="muted tiny">Next due {{ r.projected_due.due_date|dmy }} · {{ r.projected_due.interest_paise|inr }}</span>{% endif %}</div>
+    <form method="post" action="/loans/{{ loan.id }}/entries">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="type" value="PAYMENT">
+      <div class="formgrid">
+        <div class="field"><label for="amt">Amount (₹) *</label><input id="amt" name="amount" inputmode="decimal" required placeholder="e.g. 2,000">
+          <div class="hint">{{ b.payoff_today_paise|inr }} closes the loan today. Applied: penalty → oldest interest → principal.</div></div>
+        <div class="field"><label for="dt">Payment date</label><input id="dt" type="date" name="entry_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}" min="{{ loan.start_date.isoformat() }}"></div>
+        <div class="field"><label for="mode">Payment mode</label><select id="mode" name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></div>
+        <div class="field"><label for="ref">Reference</label><input id="ref" name="reference" placeholder="UPI ref, cheque no."></div>
+      </div>
+      <div class="formfoot"><button class="btn">{{ icon("check") }}Save payment</button></div>
     </form>
-  </details>
-</section>
-{% endif %}
+    <details class="more"><summary>+ Other entries: top-up, rate change, waiver, penalty</summary>
+      <form method="post" action="/loans/{{ loan.id }}/entries">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="formgrid">
+          <div class="field"><label for="ty">Type</label><select id="ty" name="type">
+            <option value="TOPUP">Top-up (more money {{ "lent" if given else "borrowed" }})</option>
+            <option value="RATE_CHANGE">Rate change</option>
+            <option value="WAIVER">Waive interest</option>
+            <option value="PENALTY">Late penalty</option></select></div>
+          <div class="field"><label for="d2">Date</label><input id="d2" type="date" name="entry_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}"></div>
+          <div class="field"><label for="a2">Amount (₹)</label><input id="a2" name="amount" inputmode="decimal"><div class="hint">Waiver: leave empty to waive the oldest unpaid due in full.</div></div>
+          <div class="field"><label for="r2">New rate (%)</label><input id="r2" name="new_rate" inputmode="decimal"><div class="hint">Rate change only.</div></div>
+          <div class="field full"><label for="n2">Note</label><input id="n2" name="note"></div>
+        </div>
+        <div class="formfoot"><button class="btn secondary">Save entry</button></div>
+      </form>
+    </details>
+    {% else %}
+    <div class="cardhead"><h2>Loan {{ loan.status|replace("_", " ")|lower }}</h2></div>
+    <p class="muted">No new entries can be added. Set the status back to "From the ledger" below to reopen it.</p>
+    {% endif %}
+  </div>
 
-<section class="card">
-  <h2>Dues</h2>
-  <div class="scroll"><table class="num">
-    <tr><th>Due</th><th class="hide-sm">Period</th><th>Interest</th><th>Paid</th><th>Left</th><th>Status</th></tr>
+  <div class="card">
+    <div class="cardhead"><h2>Terms</h2></div>
+    <div class="metricrow"><span>Rate</span><b>{{ loan.rate|pct }} {{ "per month" if loan.rate_unit == "PER_MONTH" else "per year" }}</b></div>
+    <div class="metricrow"><span>Interest paid</span><b>{{ loan.interest_cycle|replace("_", " ")|lower|capitalize }}</b></div>
+    <div class="metricrow"><span>Due day</span><b>{{ loan.due_day }} of the month</b></div>
+    <div class="metricrow"><span>Grace</span><b>{{ loan.grace_days }} days</b></div>
+    <div class="metricrow"><span>Maturity</span><b>{{ loan.maturity_date|dmy if loan.maturity_date else "Open-ended" }}</b></div>
+    {% if loan.purpose %}<div class="metricrow"><span>Purpose</span><b>{{ loan.purpose }}</b></div>{% endif %}
+    {% if loan.collateral %}<div class="metricrow"><span>Collateral</span><b>{{ loan.collateral }}</b></div>{% endif %}
+    {% if links %}
+    <div class="cardhead" style="margin:20px 0 8px"><h2>Funding</h2></div>
+    {% for l in links %}{% set other = others[l.given_loan_id if l.taken_loan_id == loan.id else l.taken_loan_id] %}
+    <div class="metricrow"><span>{{ "Funds" if l.taken_loan_id == loan.id else "Funded by" }} <a class="linkish" href="/loans/{{ other.id }}">LN-{{ other.id }}</a>
+      {% if other.book != loan.book %}<span class="tag orange">cross-book</span>{% endif %}</span><b class="num">{{ l.amount_paise|inr(decimals=False) }}</b></div>
+    {% endfor %}{% endif %}
+    <form method="post" action="/loans/{{ loan.id }}/status" class="field" style="margin-top:20px">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label for="st">Status</label>
+      <div style="display:flex;gap:8px"><select id="st" name="status">
+        <option value="">From the ledger</option>
+        <option value="SETTLED" {{ "selected" if loan.status == "SETTLED" }}>Settled</option>
+        <option value="WRITTEN_OFF" {{ "selected" if loan.status == "WRITTEN_OFF" }}>Written off</option></select>
+        <button class="btn soft sm">Set</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:19px">
+  <div class="cardhead"><h2>Interest dues</h2><span class="muted tiny">{{ r.dues|length }} due{{ "s" if r.dues|length != 1 }}</span></div>
+  {% if r.dues %}
+  <div class="tablewrap"><table>
+    <tr><th>Due date</th><th class="hide-sm">Period</th><th class="right">Interest</th><th class="right">Paid</th><th class="right">Left</th><th>Status</th></tr>
     {% for d in r.dues|reverse %}
-    <tr class="st-{{ d.status|lower }}"><td>{{ d.due.due_date|dshort }}</td>
-      <td class="muted hide-sm">{{ d.due.period_start.strftime("%d %b") }}–{{ d.due.period_end.strftime("%d %b") }}</td>
-      <td>{{ d.due.interest_paise|inr }}</td><td>{{ (d.paid_paise + d.waived_paise)|inr }}</td>
-      <td>{{ d.outstanding_paise|inr }}</td>
-      <td>{{ d.status|lower }}{% if d.overdue_days %}<br><span class="muted">{{ d.overdue_days }}d</span>{% endif %}</td></tr>
-    {% else %}<tr><td colspan="6" class="muted">No dues yet.</td></tr>{% endfor %}
-  </table></div>
-</section>
-
-<section class="card">
-  <h2>Ledger</h2>
-  <ul class="ledger">
-    {% for e in loan.entries|reverse %}
-    <li class="{{ 'reversed' if e.id in reversed_ids }}">
-      <div><b>{{ e.type|lower|replace("_", " ") }}</b> {{ e.amount_paise|inr if e.amount_paise else "" }}
-        {% if e.new_rate is not none %}→ {{ e.new_rate|pct }}{% endif %}
-        <span class="muted">{{ e.entry_date|dmy }} · #{{ e.id }}{% if e.reverses_id %} · reverses #{{ e.reverses_id }}{% endif %}
-        {% if e.reference %} · {{ e.reference }}{% endif %}{% if e.note %} · {{ e.note }}{% endif %}</span></div>
-      {% if allocs[e.id] %}<div class="muted split">{% for a in allocs[e.id] %}{{ a.bucket|lower }} {{ a.amount_paise|inr }}{{ ", " if not loop.last }}{% endfor %}</div>{% endif %}
-      {% if e.type not in ("REVERSAL", "DISBURSE") and e.id not in reversed_ids %}
-      <form method="post" action="/entries/{{ e.id }}/reverse" onsubmit="return confirm('Reverse entry #{{ e.id }}? This adds a reversal; nothing is deleted.')">
-        <button class="link">reverse</button></form>{% endif %}
-    </li>
+    <tr><td class="tdmain">{{ d.due.due_date|dshort }}</td>
+      <td class="muted hide-sm">{{ d.due.period_start.strftime("%d %b") }} – {{ d.due.period_end.strftime("%d %b %Y") }}</td>
+      <td class="tdright num">{{ d.due.interest_paise|inr }}</td><td class="tdright num">{{ (d.paid_paise + d.waived_paise)|inr }}</td>
+      <td class="tdright tdmain num">{{ d.outstanding_paise|inr }}</td>
+      <td>{{ due_tag(d.status) }}{% if d.overdue_days %} <span class="tiny muted">{{ d.overdue_days }}d</span>{% endif %}</td></tr>
     {% endfor %}
-  </ul>
-</section>
+  </table></div>
+  {% else %}{{ empty("No interest has fallen due yet.", "clock") }}{% endif %}
+</div>
 
-{% if links %}
-<section class="card">
-  <h2>Funding</h2>
-  <ul class="plain">{% for l in links %}{% set other = others[l.given_loan_id if l.taken_loan_id == loan.id else l.taken_loan_id] %}
-    <li>{{ l.amount_paise|inr(decimals=False) }} {{ "funds" if l.taken_loan_id == loan.id else "funded by" }}
-      <a href="/loans/{{ other.id }}">loan #{{ other.id }}</a>{% if other.book != loan.book %} <span class="tag warn">cross-book</span>{% endif %}</li>{% endfor %}</ul>
-</section>
-{% endif %}
-
-<section class="card">
-  <p><a class="button secondary" href="/reports/statement/{{ loan.id }}">Statement (print / PDF)</a></p>
-  <form method="post" action="/loans/{{ loan.id }}/status" class="row">
-    <select name="status"><option value="">Status from the ledger</option>
-      <option value="SETTLED" {{ "selected" if loan.status == "SETTLED" }}>Settled</option>
-      <option value="WRITTEN_OFF" {{ "selected" if loan.status == "WRITTEN_OFF" }}>Written off</option></select>
-    <button class="secondary">Set status</button>
-  </form>
-</section>
+<div class="card">
+  <div class="cardhead"><h2>Ledger</h2><span class="muted tiny">Append-only · corrections are reversals</span></div>
+  <div class="ledger">
+    {% for e in loan.entries|reverse %}
+    {% set rev = e.id in reversed_ids %}
+    <div class="listitem {{ 'reversed' if rev }}">
+      <div class="bubble {{ 'green' if e.type in ('PAYMENT',) else 'red' if e.type == 'REVERSAL' else '' }}">{{ icon({"PAYMENT": "check", "DISBURSE": "up" if given else "down", "TOPUP": "plus", "REVERSAL": "back", "RATE_CHANGE": "chart", "WAIVER": "spark", "PENALTY": "clock"}.get(e.type, "file")) }}</div>
+      <div style="min-width:0">
+        <strong>{{ e.type|replace("_", " ")|title }}{% if e.new_rate is not none %} → {{ e.new_rate|pct }}{% endif %}{% if rev %} <span class="tag gray">reversed</span>{% endif %}</strong>
+        <small>{{ e.entry_date|dmy }} · #{{ e.id }}{% if e.payment_mode and e.type in ("PAYMENT", "DISBURSE", "TOPUP") %} · {{ e.payment_mode }}{% endif %}{% if e.reverses_id %} · reverses #{{ e.reverses_id }}{% endif %}{% if e.reference %} · {{ e.reference }}{% endif %}{% if e.note %} · {{ e.note }}{% endif %}</small>
+        {% if allocs[e.id] %}<div class="alloc">{% for a in allocs[e.id] %}{{ a.bucket|lower }} {{ a.amount_paise|inr }}{{ " · " if not loop.last }}{% endfor %}</div>{% endif %}
+      </div>
+      <div class="right">{% if e.amount_paise %}<b class="num">{{ e.amount_paise|inr }}</b>{% endif %}
+        {% if e.type not in ("REVERSAL", "DISBURSE") and not rev %}
+        <form method="post" action="/entries/{{ e.id }}/reverse" onsubmit="return confirm('Reverse entry #{{ e.id }}? A reversal is added; nothing is deleted.')">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="linkbtn">Reverse</button></form>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
 {% endblock %}

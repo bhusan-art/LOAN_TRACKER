@@ -73,7 +73,7 @@ def build_digest(s: Session, run_date: date, settings: Settings) -> Digest:
     rows = svc.portfolio(s, run_date)
     for r in rows:
         loan, res = r.loan, r.result
-        if loan.status in ("SETTLED", "WRITTEN_OFF", "CLOSED"):
+        if r.status in ("SETTLED", "WRITTEN_OFF", "CLOSED"):
             continue
         who, taken = loan.party.name, loan.direction == "TAKEN"
         muted = loan.book in settings.mute_books

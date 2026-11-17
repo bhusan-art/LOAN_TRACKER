@@ -23,9 +23,18 @@ def client(s):
     return TestClient(app)
 
 
+def tok(c, page="/login"):
+    return re.search(r'name="csrf_token" value="([^"]+)"', c.get(page).text).group(1)
+
+
+def post(c, url, data, page="/parties", **kw):
+    return c.post(url, data={**data, "csrf_token": tok(c, page)}, **kw)
+
+
 def login(c, code=None):
     return c.post("/login", data={"username": "owner", "password": "a long password",
-                                  "code": code or auth.totp_code(SECRET)}, follow_redirects=False)
+                                  "code": code or auth.totp_code(SECRET), "csrf_token": tok(c)},
+                  follow_redirects=False)
 
 
 def test_pages_need_login(client):
@@ -41,15 +50,14 @@ def test_wrong_code_rejected(client):
 
 def test_full_flow(client):
     assert login(client).headers["location"] == "/"
-    r = client.post("/parties", data={"name": "Ravi"}, follow_redirects=False)
+    r = post(client, "/parties", {"name": "Ravi"}, follow_redirects=False)
     party_id = int(r.headers["location"].rsplit("/", 1)[1])
-    r = client.post("/loans", data={"party_id": party_id, "direction": "GIVEN", "book": "PERSONAL",
-                                    "principal": "1,00,000", "start_date": "2026-01-01", "rate": "2",
-                                    "due_day": "1"}, follow_redirects=False)
+    r = post(client, "/loans", {"party_id": party_id, "direction": "GIVEN", "book": "PERSONAL",
+                                "principal": "1,00,000", "start_date": "2026-01-01", "rate": "2",
+                                "due_day": "1"}, follow_redirects=False)
     loan_id = int(r.headers["location"].rsplit("/", 1)[1])
-    client.post(f"/loans/{loan_id}/entries", data={"type": "PAYMENT", "amount": "1500",
-                                                   "entry_date": "2026-02-05"})
-    page = client.post("/quick", data={"loan_id": loan_id, "amount": "32,500", "entry_date": "2026-03-15"}).text
+    post(client, f"/loans/{loan_id}/entries", {"type": "PAYMENT", "amount": "1500", "entry_date": "2026-02-05"})
+    page = post(client, "/quick", {"loan_id": loan_id, "amount": "32,500", "entry_date": "2026-03-15"}).text
     assert "principal ₹30,000.00" in page
     data = client.get(f"/api/loans/{loan_id}").json()
     assert data["balances"]["payoff_today_paise"] == 7_167_097
@@ -57,11 +65,11 @@ def test_full_flow(client):
 
     first_payment = client.get(f"/api/loans/{loan_id}/entries").json()[-2]
     assert first_payment["amount_paise"] == 150_000
-    client.post(f"/entries/{first_payment['id']}/reverse", data={})
+    post(client, f"/entries/{first_payment['id']}/reverse", {})
     assert client.get(f"/api/loans/{loan_id}").json()["principal_outstanding_paise"] == 7_150_000
 
     for url in ["/", "/loans", "/parties", f"/parties/{party_id}", f"/loans/{loan_id}", "/quick",
-                "/calendar?days=60", "/reports", f"/reports/statement/{loan_id}", "/funding",
+                "/calendar?days=60", "/calendar?days=90", "/reports", "/loans?direction=TAKEN&q=ra", f"/reports/statement/{loan_id}", "/funding",
                 "/loans/new?direction=TAKEN", "/api/dashboard", "/api/calendar", "/api/reports/fy-interest",
                 "/api/reports/overdue", "/api/reminders", "/api/parties", "/healthz"]:
         assert client.get(url).status_code == 200, url
@@ -77,7 +85,7 @@ def test_book_toggle_filters(client):
     assert len(client.get("/api/loans?book=business").json()) == 1
     assert client.get("/api/loans?book=personal").json() == []
     client.get("/book/personal")
-    assert "book-personal" in client.get("/").text
+    assert 'href="/book/personal" class="selected"' in client.get("/").text
 
 
 def test_validation_errors_are_messages(client):
@@ -86,12 +94,37 @@ def test_validation_errors_are_messages(client):
     r = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "",
                                         "principal_paise": 1, "start_date": "2026-01-01", "rate": "2"})
     assert r.status_code == 400 and "book" in r.json()["detail"]
-    page = client.post("/loans", data={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
-                                       "principal": "1.005", "rate": "2"}, headers={"referer": "/loans/new"})
+    page = post(client, "/loans", {"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                   "principal": "1.005", "rate": "2"}, headers={"referer": "/loans/new"})
     assert "2 decimal places" in page.text
 
 
 def test_login_rate_limited(client):
     for _ in range(5):
         login(client, code="000000")
-    assert "Too many attempts" in client.post("/login", data={"username": "owner", "password": "x"}).text
+    r = client.post("/login", data={"username": "owner", "password": "x", "csrf_token": tok(client)})
+    assert "Too many attempts" in r.text
+
+
+def test_form_without_csrf_token_is_rejected(client):
+    login(client)
+    r = client.post("/parties", data={"name": "Sneaky"}, headers={"referer": "/parties"})
+    assert "expired" in r.text
+    assert client.get("/api/parties").json() == []
+
+
+def test_redirects_stay_on_site(client):
+    login(client)
+    r = client.get("/book/business", headers={"referer": "https://evil.example/phish"}, follow_redirects=False)
+    assert r.headers["location"] == "/"
+    r = client.get("/book/business", headers={"referer": "http://testserver/loans?status=ACTIVE"},
+                   follow_redirects=False)
+    assert r.headers["location"] == "/loans?status=ACTIVE"
+
+
+def test_future_start_date_rejected(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Later"}).json()["id"]
+    r = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                        "principal_paise": 100, "start_date": "2026-05-01", "rate": "2"})
+    assert r.status_code == 400 and "future" in r.json()["detail"]

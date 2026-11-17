@@ -1,39 +1,55 @@
 {% extends "base.html" %}
-{% block title %}New loan{% endblock %}
+{% from "_ui.html" import icon %}
+{% block title %}{{ "Lend money" if direction == "GIVEN" else "Borrow money" }}{% endblock %}
+{% block crumb %}New loan{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>{{ "Lend money" if direction == "GIVEN" else "Record money borrowed" }}</h1>
-  {% if not parties %}<p>First <a href="/parties">add the person</a>.</p>{% else %}
-  <form method="post" action="/loans" class="stack">
-    <input type="hidden" name="direction" value="{{ direction }}">
-    <label>{{ "Borrower" if direction == "GIVEN" else "Lender" }}
-      <select name="party_id" required><option value="">Choose…</option>
-        {% for p in parties %}<option value="{{ p.id }}" {{ "selected" if p.id == party_id }}>{{ p.name }}</option>{% endfor %}</select></label>
-    <fieldset class="row"><legend>Book (required)</legend>
-      <label class="radio"><input type="radio" name="book" value="BUSINESS" required> Business</label>
-      <label class="radio"><input type="radio" name="book" value="PERSONAL"> Personal</label></fieldset>
-    <label>Amount (₹) <input name="principal" inputmode="decimal" required placeholder="1,00,000"></label>
-    <div class="row">
-      <label>Interest rate (%) <input name="rate" inputmode="decimal" required placeholder="2"></label>
-      <label>per <select name="rate_unit"><option value="PER_MONTH">month</option><option value="PER_YEAR">year</option></select></label>
+{% set given = direction == "GIVEN" %}
+<div class="heading">
+  <div><div class="eyebrow">{{ "Loan given" if given else "Loan taken" }}</div>
+    <h1>{{ "Lend money" if given else "Record money borrowed" }}</h1>
+    <p class="subtitle">The money moves today or on the start date; the disbursement is recorded in the ledger.</p></div>
+  <div class="headingActions"><a class="btn secondary" href="/loans/new?direction={{ 'TAKEN' if given else 'GIVEN' }}">Switch to {{ "borrowing" if given else "lending" }}</a></div>
+</div>
+<div class="two">
+  <div class="card">
+    {% if not parties %}
+    <p>First <a class="linkish" href="/parties">add the person</a> you are {{ "lending to" if given else "borrowing from" }}.</p>
+    {% else %}
+    <form method="post" action="/loans">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="direction" value="{{ direction }}">
+      <div class="formgrid">
+        <div class="field full"><label for="party">{{ "Borrower" if given else "Lender" }} *</label>
+          <select id="party" name="party_id" required><option value="">Choose a person…</option>
+            {% for p in parties %}<option value="{{ p.id }}" {{ "selected" if p.id == party_id }}>{{ p.name }}</option>{% endfor %}</select>
+          <div class="hint">Not in the list? <a class="linkish" href="/parties">Add a person</a>.</div></div>
+        <div class="field full"><label>Book *</label>
+          <div class="radios"><label><input type="radio" name="book" value="BUSINESS" required> Business</label>
+            <label><input type="radio" name="book" value="PERSONAL"> Personal</label></div></div>
+        <div class="field"><label for="pr">Amount (₹) *</label><input id="pr" name="principal" inputmode="decimal" required placeholder="1,00,000"></div>
+        <div class="field"><label for="sd">Start date</label><input id="sd" type="date" name="start_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}"></div>
+        <div class="field"><label for="rt">Interest rate (%) *</label><input id="rt" name="rate" inputmode="decimal" required placeholder="2"></div>
+        <div class="field"><label for="ru">Per</label><select id="ru" name="rate_unit"><option value="PER_MONTH">Month</option><option value="PER_YEAR">Year</option></select></div>
+        <div class="field"><label for="ic">Interest paid</label><select id="ic" name="interest_cycle">
+          <option value="MONTHLY">Monthly</option><option value="QUARTERLY">Quarterly</option><option value="AT_MATURITY">At maturity</option></select></div>
+        <div class="field"><label for="dd">Due day of month</label><input id="dd" name="due_day" type="number" min="1" max="31" placeholder="Same as start date"></div>
+        <div class="field"><label for="gd">Grace days</label><input id="gd" name="grace_days" type="number" min="0" value="3"></div>
+        <div class="field"><label for="md">Maturity date</label><input id="md" type="date" name="maturity_date"><div class="hint">Optional. Required for "at maturity".</div></div>
+        <div class="field"><label for="pm">{{ "Paid out" if given else "Received" }} by</label><select id="pm" name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></div>
+        <div class="field"><label for="pu">Purpose</label><input id="pu" name="purpose"></div>
+        <div class="field full"><label for="co">Collateral</label><input id="co" name="collateral"></div>
+      </div>
+      <div class="formfoot"><a class="btn secondary" href="/loans">Cancel</a><button class="btn">{{ icon("check") }}Create loan</button></div>
+    </form>
+    {% endif %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>How interest works</h2></div>
+    <div class="timeline">
+      <div class="timeitem"><b>Full cycles earn exactly the rate</b><p>₹1,00,000 at 2% a month earns ₹2,000 every cycle, whatever the month's length.</p></div>
+      <div class="timeitem"><b>Partial cycles are pro-rated by days</b><p>A short first period, a mid-cycle payoff or a rate change is charged for the days it covers.</p></div>
+      <div class="timeitem"><b>Payments pay interest first</b><p>Penalty → oldest interest due → principal. Anything left over is held as credit.</p></div>
+      {% if given %}<div class="timeitem"><b>Lending borrowed money?</b><p>Set the borrower's due day a few days before your own payment day, then link the loans under Funding links.</p></div>{% endif %}
     </div>
-    <div class="row">
-      <label>Start date <input type="date" name="start_date" value="{{ today.isoformat() }}"></label>
-      <label>Due day of month <input name="due_day" type="number" min="1" max="31" placeholder="same as start"></label>
-    </div>
-    <div class="row">
-      <label>Interest paid <select name="interest_cycle">
-        <option value="MONTHLY">monthly</option><option value="QUARTERLY">quarterly</option>
-        <option value="AT_MATURITY">at maturity</option></select></label>
-      <label>Grace days <input name="grace_days" type="number" min="0" value="3"></label>
-    </div>
-    <label>Maturity date (optional) <input type="date" name="maturity_date"></label>
-    <label>Paid out by <select name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></label>
-    <label>Purpose <input name="purpose"></label>
-    <label>Collateral <input name="collateral"></label>
-    <button>Create loan</button>
-  </form>
-  <p class="muted">Tip: when lending borrowed money, set the borrower's due day a few days before your own payment day.</p>
-  {% endif %}
-</section>
+  </div>
+</div>
 {% endblock %}

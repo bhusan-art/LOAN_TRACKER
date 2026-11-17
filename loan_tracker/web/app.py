@@ -4,13 +4,15 @@ Run:  uvicorn loan_tracker.web.app:app --host 0.0.0.0 --port 8000
 """
 from __future__ import annotations
 
+import secrets
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Iterator
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -48,6 +50,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
+    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style)
+    insecure_secret = (len(settings.secret_key) < 32 or "change-me" in settings.secret_key
+                       or settings.secret_key.startswith("dev-only"))
 
     # ------------------------------------------------------------------ deps
     def db(request: Request) -> Iterator[Session]:
@@ -74,18 +79,56 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         q = (request.query_params.get("book") or request.cookies.get("book") or "all").lower()
         return q if q in BOOKS else "all"
 
+    def csrf_token(request: Request) -> str:
+        tok = request.session.get("csrf")
+        if not tok:
+            tok = request.session["csrf"] = secrets.token_urlsafe(24)
+        return tok
+
+    async def check_csrf(request: Request) -> None:
+        """Every HTML form POST carries the session's token (defence in depth on
+        top of SameSite=Lax cookies). JSON /api calls are covered by FastAPI's
+        JSON content-type requirement, which a cross-site form cannot send."""
+        form = await request.form()
+        sent = form.get("csrf_token", "")
+        if not sent or not secrets.compare_digest(str(sent), request.session.get("csrf", "")):
+            raise svc.ServiceError("This form expired. Please try again.")
+
     def render(request: Request, name: str, **ctx) -> HTMLResponse:
+        nav_overdue = 0
+        if request.session.get("user"):
+            with app.state.maker() as s2:
+                nav_overdue = s2.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
         ctx.update(request=request, book=book_of(request), today=app.state.today(),
                    flash=request.session.pop("flash", None), error=request.session.pop("error", None),
-                   user=request.session.get("user"))
+                   user=request.session.get("user"), csrf=csrf_token(request),
+                   nav_overdue=nav_overdue, insecure_secret=insecure_secret)
         return templates.TemplateResponse(request, name, ctx)
+
+    def safe_path(url: str | None, default: str = "/") -> str:
+        """Only ever redirect within this site: keep the path (and query) of
+        the URL; anything not starting with a single '/' falls back to default."""
+        if not url:
+            return default
+        parts = urlsplit(url)
+        path = parts.path or "/"
+        if not path.startswith("/") or path.startswith("//") or "\\" in path:
+            return default
+        return path + (f"?{parts.query}" if parts.query else "")
+
+    def referer(request: Request, default: str = "/") -> str:
+        ref = request.headers.get("referer")
+        if ref:
+            if urlsplit(ref).netloc not in ("", request.url.netloc):
+                return default
+        return safe_path(ref, default)
 
     def back(request: Request, url: str, *, flash: str | None = None, error: str | None = None):
         if flash:
             request.session["flash"] = flash
         if error:
             request.session["error"] = error
-        return RedirectResponse(url, status_code=303)
+        return RedirectResponse(safe_path(url), status_code=303)
 
     def parse_date(v: str | None, default: date) -> date:
         if not v:
@@ -106,7 +149,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": str(exc)}, status_code=400)
         request.session["error"] = str(exc)
-        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
+        return RedirectResponse(referer(request), status_code=303)
 
     # ------------------------------------------------------------- public
     @app.get("/healthz")
@@ -131,7 +174,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def login_page(request: Request):
         return render(request, "login.html")
 
-    @app.post("/login")
+    @app.post("/login", dependencies=[Depends(check_csrf)])
     def login(request: Request, username: str = Form(...), password: str = Form(...),
               code: str = Form(""), s: Session = Depends(db)):
         ip = request.client.host if request.client else "?"
@@ -149,7 +192,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             fails.append(now)
             return back(request, "/login", error="Wrong username, password or code.")
         fails.clear()
-        request.session.clear()
+        request.session.clear()  # new session on login (prevents session fixation)
         request.session["user"] = u.username
         return RedirectResponse("/", status_code=303)
 
@@ -161,7 +204,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     # ------------------------------------------------------------- pages
     @app.get("/book/{name}")
     def set_book(name: str, request: Request, _: str = Depends(user)):
-        resp = RedirectResponse(request.headers.get("referer") or "/", status_code=303)
+        resp = RedirectResponse(referer(request), status_code=303)
         resp.set_cookie("book", name if name in BOOKS else "all", max_age=365 * 86400, samesite="lax")
         return resp
 
@@ -177,7 +220,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         rows = reports_parties(s, today(), BOOKS[book_of(request)], q)
         return render(request, "parties.html", rows=rows, q=q)
 
-    @app.post("/parties")
+    @app.post("/parties", dependencies=[Depends(check_csrf)])
     def parties_create(request: Request, name: str = Form(...), phone: str = Form(""),
                        address: str = Form(""), notes: str = Form(""), _: str = Depends(user),
                        s: Session = Depends(db)):
@@ -190,7 +233,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         rows = svc.portfolio(s, today(), BOOKS[book_of(request)], party_id=party_id)
         return render(request, "party.html", party=party, rows=rows, summary=party_summary(rows))
 
-    @app.post("/parties/{party_id}")
+    @app.post("/parties/{party_id}", dependencies=[Depends(check_csrf)])
     def party_update(party_id: int, request: Request, name: str = Form(...), phone: str = Form(""),
                      address: str = Form(""), id_proof_ref: str = Form(""), guarantor: str = Form(""),
                      notes: str = Form(""), risk_tag: str = Form(""), _: str = Depends(user),
@@ -200,12 +243,15 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return back(request, f"/parties/{party_id}", flash="Saved.")
 
     @app.get("/loans", response_class=HTMLResponse)
-    def loans_page(request: Request, direction: str = "", status: str = "", _: str = Depends(user),
-                   s: Session = Depends(db)):
-        rows = svc.portfolio(s, today(), BOOKS[book_of(request)], direction=direction or None)
-        if status:
-            rows = [r for r in rows if r.loan.status == status]
-        return render(request, "loans.html", rows=rows, direction=direction, status=status)
+    def loans_page(request: Request, direction: str = "", status: str = "", q: str = "",
+                   _: str = Depends(user), s: Session = Depends(db)):
+        all_rows = svc.portfolio(s, today(), BOOKS[book_of(request)])
+        rows = [r for r in all_rows
+                if (not direction or r.loan.direction == direction)
+                and (not status or r.status == status)
+                and (not q or q.lower() in r.loan.party.name.lower() or q.strip().upper() in (f"LN-{r.loan.id}", str(r.loan.id)))]
+        return render(request, "loans.html", rows=rows, all_rows=all_rows, direction=direction,
+                      status=status, q=q)
 
     @app.get("/loans/new", response_class=HTMLResponse)
     def loan_new(request: Request, party_id: int | None = None, direction: str = "GIVEN",
@@ -213,7 +259,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         parties = s.scalars(select(m.Party).order_by(m.Party.name)).all()
         return render(request, "loan_new.html", parties=parties, party_id=party_id, direction=direction)
 
-    @app.post("/loans")
+    @app.post("/loans", dependencies=[Depends(check_csrf)])
     def loan_create(request: Request, party_id: int = Form(...), direction: str = Form(...),
                     book: str = Form(""), principal: str = Form(...), start_date: str = Form(""),
                     rate: str = Form(...), rate_unit: str = Form("PER_MONTH"),
@@ -245,7 +291,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return render(request, "loan.html", loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
                       links=links, others=others)
 
-    @app.post("/loans/{loan_id}/entries")
+    @app.post("/loans/{loan_id}/entries", dependencies=[Depends(check_csrf)])
     def loan_entry(loan_id: int, request: Request, type: str = Form(...), entry_date: str = Form(""),
                    amount: str = Form(""), new_rate: str = Form(""), payment_mode: str = Form("CASH"),
                    reference: str = Form(""), note: str = Form(""), _: str = Depends(user),
@@ -260,9 +306,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
                               for a in res.allocations if a.entry_id == e.id)
             msg = f"Payment of {fmt.inr(e.amount_paise)} recorded: {split or 'held as credit'}."
-        return back(request, request.headers.get("referer") or f"/loans/{loan_id}", flash=msg)
+        return back(request, referer(request, f"/loans/{loan_id}"), flash=msg)
 
-    @app.post("/entries/{entry_id}/reverse")
+    @app.post("/entries/{entry_id}/reverse", dependencies=[Depends(check_csrf)])
     def entry_reverse(entry_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
                       s: Session = Depends(db)):
         t = today()
@@ -273,19 +319,20 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=note)
         return back(request, f"/loans/{loan_id}", flash=f"Entry {entry_id} reversed.")
 
-    @app.post("/loans/{loan_id}/status")
+    @app.post("/loans/{loan_id}/status", dependencies=[Depends(check_csrf)])
     def loan_status(loan_id: int, request: Request, status: str = Form(""), _: str = Depends(user),
                     s: Session = Depends(db)):
         svc.set_owner_status(s, loan_id, status or None, today())
         return back(request, f"/loans/{loan_id}", flash="Status updated.")
 
     @app.get("/quick", response_class=HTMLResponse)
-    def quick_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
+    def quick_page(request: Request, loan_id: int | None = None, _: str = Depends(user),
+                   s: Session = Depends(db)):
         rows = [r for r in svc.portfolio(s, today(), BOOKS[book_of(request)])
-                if r.loan.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
-        return render(request, "quick.html", rows=rows)
+                if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
+        return render(request, "quick.html", rows=rows, selected=loan_id)
 
-    @app.post("/quick")
+    @app.post("/quick", dependencies=[Depends(check_csrf)])
     def quick_save(request: Request, loan_id: int = Form(...), amount: str = Form(...),
                    entry_date: str = Form(""), payment_mode: str = Form("CASH"), reference: str = Form(""),
                    _: str = Depends(user), s: Session = Depends(db)):
@@ -314,7 +361,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                       taken=[r for r in rows if r.loan.direction == "TAKEN"],
                       given=[r for r in rows if r.loan.direction == "GIVEN"])
 
-    @app.post("/funding")
+    @app.post("/funding", dependencies=[Depends(check_csrf)])
     def funding_create(request: Request, taken_loan_id: int = Form(...), given_loan_id: int = Form(...),
                        amount: str = Form(...), link_date: str = Form(""),
                        confirm_cross_book: str = Form(""), _: str = Depends(user), s: Session = Depends(db)):
@@ -326,8 +373,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     @app.get("/calendar", response_class=HTMLResponse)
     def calendar_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
         days = days if days in (30, 60, 90) else 30
-        cal = reports.cash_calendar(s, today(), days, BOOKS[book_of(request)])
-        return render(request, "calendar.html", cal=cal, days=days)
+        t = today()
+        cal = reports.cash_calendar(s, t, days, BOOKS[book_of(request)])
+        tin = sum(i.amount_paise for d in cal for i in d.money_in)
+        tout = sum(i.amount_paise for d in cal for i in d.money_out)
+        low = min(cal, key=lambda d: d.running_paise, default=None)
+        totals = {"in": tin, "out": tout, "net": tin - tout,
+                  "low": min(0, low.running_paise) if low else 0,
+                  "low_day": low.day if low and low.running_paise < 0 else None}
+        weeks = reports.calendar_weeks(cal, t, t + timedelta(days=days))
+        return render(request, "calendar.html", cal=cal, days=days, totals=totals, weeks=weeks)
 
     @app.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -394,7 +449,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                   _: str = Depends(user), s: Session = Depends(db)):
         rows = svc.portfolio(s, today(), BOOKS[book_of(request)], direction=direction or None,
                              party_id=party_id)
-        return [loan_json(r.loan, r.result) for r in rows if not status or r.loan.status == status]
+        return [loan_json(r.loan, r.result) | {"status": r.status} for r in rows if not status or r.status == status]
 
     @app.get("/api/loans/{loan_id}")
     def api_loan(loan_id: int, as_of: str = "", _: str = Depends(user), s: Session = Depends(db)):

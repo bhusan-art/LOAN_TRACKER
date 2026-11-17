@@ -1,29 +1,44 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, dir_tag, book_tag, empty %}
 {% block title %}Reports{% endblock %}
+{% block crumb %}Reports{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>Interest by financial year</h1>
-  <p class="muted">Interest is counted when it falls due. Business and personal are kept apart for tax; confirm treatment with your CA.</p>
-  <div class="scroll"><table class="num">
-    <tr><th>Year</th><th>Book</th><th>Earned</th><th>Received</th><th>Cost</th><th>Paid</th><th>Net</th></tr>
-    {% for r in fy %}<tr><td class="left">{{ r.fy }}</td><td>{{ r.book|lower }}</td><td>{{ r.earned|inr }}</td>
-      <td>{{ r.received|inr }}</td><td>{{ r.paid|inr }}</td><td>{{ r.paid_out|inr }}</td><td><b>{{ r.net|inr }}</b></td></tr>
-    {% else %}<tr><td colspan="7" class="muted">No interest yet.</td></tr>{% endfor %}
+<div class="heading">
+  <div><div class="eyebrow">Insights</div><h1>Reports</h1>
+    <p class="subtitle">Interest by financial year, overdue dues and cross-book funding.</p></div>
+  <div class="headingActions"><a class="btn secondary" href="/export.csv">{{ icon("download") }}Export CSV</a></div>
+</div>
+<div class="card" style="margin-bottom:19px">
+  <div class="cardhead"><h2>Interest by financial year</h2><span class="muted tiny">Counted when it falls due · April–March</span></div>
+  {% if fy %}
+  <div class="tablewrap"><table>
+    <tr><th>Year</th><th>Book</th><th class="right">Earned</th><th class="right hide-sm">Received</th><th class="right">Cost</th><th class="right hide-sm">Paid</th><th class="right">Net</th></tr>
+    {% for r in fy %}<tr><td class="tdmain">{{ r.fy }}</td><td>{{ book_tag(r.book) }}</td>
+      <td class="tdright num">{{ r.earned|inr }}</td><td class="tdright num hide-sm">{{ r.received|inr }}</td>
+      <td class="tdright num">{{ r.paid|inr }}</td><td class="tdright num hide-sm">{{ r.paid_out|inr }}</td>
+      <td class="tdright tdmain num">{{ r.net|inr }}</td></tr>{% endfor %}
   </table></div>
-</section>
-<section class="card">
-  <h2>Overdue</h2>
-  <table class="num">
-    <tr><th>Who</th><th>Due date</th><th>Left</th><th>Days late</th></tr>
-    {% for i in overdue %}<tr><td class="left"><a href="/loans/{{ i.loan_id }}">{{ "←" if i.direction == "GIVEN" else "→" }} {{ i.party }}</a></td>
-      <td>{{ i.due_date|dmy }}</td><td>{{ i.amount_paise|inr }}</td><td>{{ i.overdue_days }}</td></tr>
-    {% else %}<tr><td colspan="4" class="muted">Nothing overdue.</td></tr>{% endfor %}
-  </table>
-</section>
-<section class="card">
-  <h2>Cross-book funding</h2>
-  <ul class="plain">{% for c in cross %}<li>{{ c.link.amount_paise|inr(decimals=False) }} borrowed ({{ c.taken.book|lower }}, loan #{{ c.taken.id }})
-    lent in {{ c.given.book|lower }} (loan #{{ c.given.id }})</li>{% else %}<li class="muted">None.</li>{% endfor %}</ul>
-</section>
-<section class="card"><p><a class="button secondary" href="/export.csv">Download everything (CSV, opens in Excel)</a></p></section>
+  <p class="muted tiny" style="margin-top:12px">Business and personal interest are kept apart because they are usually taxed differently. Confirm treatment with your CA.</p>
+  {% else %}{{ empty("No interest has fallen due yet.", "chart") }}{% endif %}
+</div>
+<div class="two">
+  <div class="card">
+    <div class="cardhead"><h2>Overdue</h2><span class="tag red">{{ overdue|length }}</span></div>
+    {% if overdue %}
+    <div class="tablewrap"><table>
+      <tr><th>Who</th><th>Due date</th><th class="right">Left</th><th class="right">Late</th></tr>
+      {% for i in overdue %}<tr><td><a class="tdmain" href="/loans/{{ i.loan_id }}">{{ i.party }}</a><div class="tdsub">{{ dir_tag(i.direction) }} LN-{{ i.loan_id }}</div></td>
+        <td>{{ i.due_date|dmy }}</td><td class="tdright tdmain num">{{ i.amount_paise|inr }}</td><td class="tdright">{{ i.overdue_days }}d</td></tr>{% endfor %}
+    </table></div>
+    {% else %}{{ empty("Nothing overdue.", "check") }}{% endif %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Cross-book funding</h2></div>
+    {% for c in cross %}
+    <div class="listitem"><div class="bubble">{{ icon("link") }}</div>
+      <div><strong>{{ c.link.amount_paise|inr(decimals=False) }} borrowed ({{ c.taken.book|lower }}) lent in {{ c.given.book|lower }}</strong>
+        <small><a class="linkish" href="/loans/{{ c.taken.id }}">LN-{{ c.taken.id }}</a> → <a class="linkish" href="/loans/{{ c.given.id }}">LN-{{ c.given.id }}</a></small></div></div>
+    {% else %}{{ empty("Business and personal money are not mixed.", "shield") }}{% endfor %}
+  </div>
+</div>
 {% endblock %}

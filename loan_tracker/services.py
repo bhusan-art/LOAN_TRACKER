@@ -159,6 +159,8 @@ def create_loan(
         raise ServiceError("choose a book: BUSINESS or PERSONAL")
     if principal_paise <= 0:
         raise ServiceError("principal must be more than zero")
+    if start_date > as_of:
+        raise ServiceError("start date is in the future; record the loan on the day the money moves")
     if maturity_date is not None and maturity_date <= start_date:
         raise ServiceError("maturity date must be after the start date")
     if interest_cycle == "AT_MATURITY" and maturity_date is None:
@@ -320,6 +322,12 @@ def link_funding(s: Session, *, taken_loan_id: int, given_loan_id: int, amount_p
 class LoanRow:
     loan: m.Loan
     result: eng.EngineResult
+
+    @property
+    def status(self) -> str:
+        """Owner decisions (SETTLED / WRITTEN_OFF) win; otherwise the engine's
+        status as of the computed date (never the possibly stale cached column)."""
+        return self.loan.status if self.loan.status in OWNER_STATUSES else self.result.loan_status
 
 
 def portfolio(s: Session, as_of: date, book: str | None = None,
