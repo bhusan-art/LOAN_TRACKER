@@ -28,7 +28,32 @@ Decisions this doc runs on (all answered in DECISIONS.md):
 | 12 | After maturity: interest keeps accruing monthly on unpaid principal until repaid; status MATURED + overdue flags |
 | 13 | No `PRINCIPAL_PREPAY` entry type; every payment goes through the waterfall (penalty → interest → principal) |
 
+| 14 | QUARTERLY: first due on/after start + 3 months, then every 3 months |
+| 15 | A complete cycle earns exactly P × r × flat months; only partial cycles pro-rate by days / days in that cycle |
+
 All tests below pin the year **2026**.
+
+> **Implementation notes (Phase 2, supersede the text below where it differs).**
+> The code lives in `loan_tracker/engine/` and the tests in `tests/engine/` are the
+> authoritative acceptance values.
+> - **Day count (#15):** a period's interest is Σ P·r/100·months·days/cycle_days, where
+>   the cycle is the regular cycle ending at the period's due date
+>   (`calendar.cycle_frame`). Segments split only at rate/principal events and
+>   boundaries, never at calendar-month edges. A short first period uses the notional
+>   previous due day (start 20 Jan, due day 5 → 16 of 31 days = **103_226 p**).
+> - **One replay (`replay.py`)** realizes dues, runs the waterfall and tracks principal
+>   in a single date-ordered pass; `accrue()` has the §2 signature again.
+>   Same-day entries: DISBURSE/TOPUP first, then by entry_id.
+> - **Payoff rule:** when a payment, after penalties and realized dues, would clear the
+>   principal, the open period [last boundary, payment day − 1] is first realized as a
+>   closing due and paid; any principal left keeps accruing from the payment day.
+> - **Mid-cycle payoff on 15 Apr:** three dues are realized (1 Feb, 1 Mar, 1 Apr = 600_000),
+>   so payoff = **10_693_333 p** (the 10_493_333 / 400_000 figures below are superseded).
+> - Zero-interest periods create no due. Entries dated after as_of are ignored.
+> - `compute()` also returns `loan_status` (ACTIVE / OVERDUE / MATURED / CLOSED).
+> - `spread(links, terms, taken_principal=None)` and
+>   `mismatch_check(links, results, written_off=frozenset())` take engine results,
+>   a simpler form than the §2 signatures.
 
 ---
 
@@ -493,9 +518,9 @@ INTEREST 150_000 p to the Feb due; pool 0. Feb due now PARTIAL, 50_000 p
 outstanding. ✓
 
 **Payoff rule worked check — mid-cycle payoff on 15 Apr 2026 (§5.3):**
-pool 10_493_333 p >= payoff_today → a closing due [1 Apr, 14 Apr]
+pool 10_693_333 p >= payoff_today → a closing due [1 Apr, 14 Apr]
 (due_date 15 Apr) at 93_333 p is realized first; waterfall: INTEREST
-200_000 (Feb) + 200_000 (Mar) + 93_333 (closing due), PRINCIPAL 10_000_000,
+200_000 × 3 (Feb, Mar, Apr) + 93_333 (closing due), PRINCIPAL 10_000_000,
 pool 0, credit 0. No dues after principal = 0; loan CLOSED.
 
 ---
@@ -628,18 +653,16 @@ Single rounding unit = paise, half-up (#8).
     Mar due = **250_000 p** (₹2,500). Two segments, one per rate cell.
 - **test_short_first_period** — GIVEN 10_000_000 p (₹1,00,000), 2%/month,
   start **20 Jan 2026**, due_day 5: first boundary 5 Feb; period
-  [20 Jan, 4 Feb] = 12 days in January + 4 in February:
-  10_000_000×2/100×12/31 = 77_419.35 p + 10_000_000×2/100×4/28 =
-  28_571.43 p → 105_990.78 → **105_991 p** (due 5 Feb 2026; two segments,
-  one per calendar month).
+  [20 Jan, 4 Feb] = 16 days of the 31-day cycle [5 Jan, 4 Feb] (#15):
+  200_000 × 16/31 = 103_225.81 → **103_226 p** (due 5 Feb 2026).
 - **test_mid_cycle_payoff** (#11) — GIVEN 10_000_000 p on 1 Jan 2026,
   2%/month, due_day 1, NO payments; owner pays off on **15 Apr 2026**.
-  Realized dues: Feb 200_000 + Mar 200_000 = 400_000. Open period
+  Realized dues: 1 Feb + 1 Mar + 1 Apr = 600_000. Open period
   [1 Apr, 14 Apr] = 14 days at 10_000_000: 200_000 × 14/30 = 93_333.33 →
-  **93_333 p**. `payoff_today` = 10_000_000 principal + 400_000 realized
-  outstd + 93_333 open + 0 = **10_493_333 p** (₹1,04,933.33). A PAYMENT of
+  **93_333 p**. `payoff_today` = 10_000_000 principal + 600_000 realized
+  outstd + 93_333 open + 0 = **10_693_333 p** (₹1,06,933.33). A PAYMENT of
   exactly that: payoff rule realizes a closing due (93_333 p) first, then
-  allocations = INTEREST 200_000 (Feb) + 200_000 (Mar) + 93_333 (closing),
+  allocations = INTEREST 200_000 × 3 + 93_333 (closing),
   PRINCIPAL 10_000_000, pool 0, credit 0. No dues after principal = 0;
   status **CLOSED**.
 - **test_post_maturity_accrual** (#12) — GIVEN 10_000_000 p on 1 Jan 2026,

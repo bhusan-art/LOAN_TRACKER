@@ -20,6 +20,7 @@ EntryType = Literal[
 DueStatusName = Literal["UPCOMING", "PARTIAL", "PAID", "OVERDUE", "WAIVED"]
 AllocationBucket = Literal["PENALTY", "INTEREST", "PRINCIPAL"]
 MismatchKind = Literal["WARNING", "RISK", "EXPOSURE"]
+LoanStatusName = Literal["ACTIVE", "OVERDUE", "MATURED", "CLOSED"]
 
 
 @dataclass(frozen=True)
@@ -136,8 +137,8 @@ class MismatchFlag:
 @dataclass(frozen=True)
 class Segment:
     from_day: date
-    to_day: date                # inclusive; segments split only at rate/principal
-                                # event days (DECISIONS #15 — no month-edge splits)
+    to_day: date                # inclusive; split at rate/principal events and due
+                                # boundaries only (DECISIONS #15 — no month-edge splits)
     principal_paise: int
     rate: Decimal               # effective rate over this segment's days
     days: int
@@ -154,6 +155,11 @@ class AccrualResult:
     segments: tuple[Segment, ...]        # audit aid; see Segment
 
 
+class EngineError(Exception):
+    """Invalid input to the engine (never raised for money conditions:
+    overpayment is credit, not an error)."""
+
+
 @dataclass(frozen=True)
 class EngineResult:
     loan_id: int
@@ -162,3 +168,5 @@ class EngineResult:
     projected_due: ProjectedDue | None  # None only when principal fully repaid (#12)
     allocations: tuple[Allocation, ...]
     balances: Balances
+    loan_status: LoanStatusName          # derived: ACTIVE / OVERDUE / MATURED / CLOSED
+    segments: tuple[Segment, ...] = ()   # audit aid: every accrual piece behind the dues

@@ -38,9 +38,9 @@ income.
 
 ## DECISIONS #11 / #12 acceptance values (engine.md §5.3)
 - Mid-cycle payoff (#11): GIVEN 10_000_000 p on 1 Jan, 2%/month, due 1st,
-  no payments; payoff PAYMENT on 15 Apr of 10_493_333 p (principal
-  10_000_000 + realized 400_000 + closing due 93_333 for [1 Apr, 14 Apr]).
-  Allocations: INTEREST 200_000 (Feb) + 200_000 (Mar) + 93_333 (closing due),
+  no payments; payoff PAYMENT on 15 Apr of 10_693_333 p (principal
+  10_000_000 + realized 600_000 (1 Feb, 1 Mar, 1 Apr) + closing due 93_333
+  for [1 Apr, 14 Apr]). Allocations: INTEREST 200_000 x3 + 93_333 (closing due),
   PRINCIPAL 10_000_000, credit 0, status CLOSED; no dues after.
 - Post-maturity accrual (#12): same loan with maturity_date 1 May; cycles
   keep generating after maturity (Jun due 200_000 p), status MATURED,
@@ -49,7 +49,7 @@ income.
 ## Edge cases to test (full list + exact values: engine.md §5.3)
 - Leap year (29 Feb)
 - due_day = 31 in a 30-day month (and February)
-- Short first period (start 20 Jan, due 5th -> 105_991 p due 5 Feb)
+- Short first period (start 20 Jan, due 5th -> 103_226 p due 5 Feb: 16 of 31 days, DECISIONS #15)
 - Payment on the disbursement day (a PAYMENT; no PRINCIPAL_PREPAY type, #13)
 - REVERSAL of an old payment (15 Mar -> INTEREST 200_000 + 200_000,
   PRINCIPAL 2_850_000, principal 7_150_000, Apr due 168_742)

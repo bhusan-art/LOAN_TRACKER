@@ -10,8 +10,10 @@ Split the loan's life into segments. A new segment starts when outstanding princ
     interest_for_period = SUM over segments ( principal_in_segment * daily_rate * days_in_segment )
 
 Day-count convention (per loan):
-- Monthly flat ("Rs 2 per Rs 100 per month", DECISIONS #10): a full cycle earns P * monthly_rate.
-  Partial month pro-rated: monthly_rate * days / days_in_that_calendar_month.
+- Monthly flat ("Rs 2 per Rs 100 per month", DECISIONS #15): a complete cycle (due date to
+  next due date) earns exactly P * monthly_rate (x3 for quarterly), whatever its length.
+  A partial cycle (short first period, mid-cycle payoff, principal or rate change inside a
+  cycle) is pro-rated: P * monthly_rate * days / days_in_that_cycle.
 - Annual: daily_rate = annual_rate / 365.
 - Day-belongs-to rule: a calendar day `d` accrues interest at the rate and
   principal in force FROM `d` (inclusive). An event dated `d` (payment, rate
@@ -31,7 +33,9 @@ EMI (optional): standard reducing-balance amortisation schedule.
 For each PAYMENT in date order:
 1. Outstanding penalty, oldest first
 2. Interest dues, oldest due first
-3. Remainder reduces principal (starts a new accrual segment)
+3. If the remainder would clear the principal, the open period up to the day before the
+   payment is first realized as a closing due and paid (DECISIONS #11)
+4. Remainder reduces principal (starts a new accrual segment); any surplus = credit
 Written as allocation rows. Overpayment beyond full payoff = credit, flagged.
 
 ## 4.3 Due generation (daily job)

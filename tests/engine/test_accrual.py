@@ -1,253 +1,150 @@
-"""Phase 2.2 acceptance tests — accrual and due generation.
+"""Accrual and due generation (engine.md §3.1/§4, DECISIONS #10-#15).
 
-engine.md §3.1/§4/§5, DECISIONS #12/#14; pinned 2026 (2028 for the leap-year
-case), paise, exact expected values. Principal timeline is the Phase 2.2
-input (payment-driven principal changes arrive with the waterfall in 2.3).
+All amounts paise, exact integers. Interest pro-rates only for periods that
+are not a complete cycle (DECISIONS #15).
 """
 import pytest
-from datetime import date
-from decimal import Decimal
 
-from loan_tracker.engine.accrual import (
-    accrue,
-    generate_dues,
-    net_rate,
-    open_period,
-    projected_due,
-)
-from loan_tracker.engine.types import LedgerEntry, LoanTerms
-
-TL_FULL = [(date(2026, 1, 1), 10_000_000)]
-TL_EXAMPLE_A = [(date(2026, 1, 1), 10_000_000), (date(2026, 3, 15), 7_000_000)]
-TL_ZEROED_15_APR = [(date(2026, 1, 1), 10_000_000), (date(2026, 4, 15), 0)]
+from loan_tracker.engine import accrue, compute
+from loan_tracker.engine.accrual import net_rate
+from tests.engine.helpers import D, P, disburse, entry, pay, terms
 
 
-def terms(**over) -> LoanTerms:
-    base = dict(
-        loan_id=1,
-        direction="GIVEN",
-        book="PERSONAL",
-        principal_paise=10_000_000,
-        start_date=date(2026, 1, 1),
-        rate=Decimal("2"),
-        rate_unit="PER_MONTH",
-        interest_type="SIMPLE",
-        interest_cycle="MONTHLY",
-        due_day=1,
-        grace_days=3,
-        penalty_rule=None,
-        maturity_date=None,
-    )
-    base.update(over)
-    return LoanTerms(**base)
-
-
-def rate_change(new_rate: Decimal, d: date, entry_id: int = 1) -> list[LedgerEntry]:
-    return [
-        LedgerEntry(
-            entry_id=entry_id,
-            entry_date=d,
-            type="RATE_CHANGE",
-            amount_paise=None,
-            new_rate=new_rate,
-            reference=None,
-            reverses=None,
-        )
-    ]
+def dues_of(t, entries, as_of):
+    return [d.interest_paise for d in accrue(t, entries, as_of).periods]
 
 
 class TestNoPayments:
     def test_feb_mar_apr_dues(self):
-        dues, _ = generate_dues(terms(), [], date(2026, 4, 1), TL_FULL)
-        assert [d.interest_paise for d in dues] == [200_000, 200_000, 200_000]
-        assert (dues[0].period_start, dues[0].period_end, dues[0].due_date) == (
-            date(2026, 1, 1), date(2026, 1, 31), date(2026, 2, 1)
-        )
+        t = terms()
+        res = accrue(t, [disburse(t)], D(2026, 4, 1))
+        assert [d.interest_paise for d in res.periods] == [200_000, 200_000, 200_000]
+        first = res.periods[0]
+        assert (first.period_start, first.period_end, first.due_date) == (
+            D(2026, 1, 1), D(2026, 1, 31), D(2026, 2, 1))
 
     def test_accrued_realized_basis_open_zero_on_boundary(self):
-        res = accrue(terms(), [], date(2026, 4, 1), TL_FULL)
+        t = terms()
+        res = accrue(t, [disburse(t)], D(2026, 4, 1))
         assert res.interest_accrued_paise == 600_000
         assert res.open_period_paise == 0
 
     def test_projected_at_15_apr(self):
         t = terms()
-        proj = projected_due(t, [], date(2026, 4, 15), TL_FULL)
-        assert proj is not None
-        assert (proj.period_start, proj.due_date) == (date(2026, 4, 1), date(2026, 5, 1))
-        assert proj.interest_paise == 200_000
+        proj = accrue(t, [disburse(t)], D(2026, 4, 15)).projected_due
+        assert (proj.period_start, proj.due_date, proj.interest_paise) == (
+            D(2026, 4, 1), D(2026, 5, 1), 200_000)
+
+    def test_no_disbursement_no_interest(self):
+        assert dues_of(terms(), [], D(2026, 4, 1)) == []
 
 
 class TestRateChangeMidCycle:
     def test_march_due_250_000(self):
-        # §5.3 test_rate_change_mid_cycle: [1 Feb,14 Feb] 100_000 + [15 Feb,28 Feb] 150_000
+        # Feb cycle 28 days: 14 days at 2% + 14 days at 3% = 100_000 + 150_000
         t = terms()
-        entries = rate_change(Decimal("3"), date(2026, 2, 15))
-        dues, _ = generate_dues(t, entries, date(2026, 3, 1), TL_FULL)
-        assert [d.interest_paise for d in dues] == [200_000, 250_000]
+        es = [disburse(t), entry("RATE_CHANGE", D(2026, 2, 15), new_rate="3")]
+        assert dues_of(t, es, D(2026, 3, 1)) == [200_000, 250_000]
 
-    def test_segments_split_at_event_and_month_edge(self):
+    def test_segments_split_at_event_and_boundary(self):
         t = terms()
-        entries = rate_change(Decimal("3"), date(2026, 2, 15))
-        res = accrue(t, entries, date(2026, 3, 1), TL_FULL)
-        assert [s.to_day for s in res.segments] == [
-            date(2026, 1, 31), date(2026, 2, 14), date(2026, 2, 28)
-        ]
-        assert [s.rate for s in res.segments] == [Decimal("2"), Decimal("2"), Decimal("3")]
-        assert [s.days for s in res.segments] == [31, 14, 14]
+        es = [disburse(t), entry("RATE_CHANGE", D(2026, 2, 15), new_rate="3")]
+        res = accrue(t, es, D(2026, 3, 1))
+        assert [(s.to_day, s.rate, s.days) for s in res.segments] == [
+            (D(2026, 1, 31), 2, 31), (D(2026, 2, 14), 2, 14), (D(2026, 2, 28), 3, 14)]
 
     def test_net_rate(self):
         t = terms()
-        entries = rate_change(Decimal("3"), date(2026, 2, 15))
-        assert net_rate(t, entries) == [
-            (date(2026, 1, 1), Decimal("2")),
-            (date(2026, 2, 15), Decimal("3")),
-        ]
+        assert net_rate(t, [entry("RATE_CHANGE", D(2026, 2, 15), new_rate="3")]) == [
+            (D(2026, 1, 1), 2), (D(2026, 2, 15), 3)]
 
 
-class TestShortFirstPeriod:
-    def test_feb_5_due_full_cycle(self):
-        # DECISIONS #15: a no-event cycle earns exactly P * r, so the short
-        # first period [20 Jan, 4 Feb] (15 days) is a full cycle -> 200_000 p
-        t = terms(start_date=date(2026, 1, 20), due_day=5)
-        tl = [(date(2026, 1, 20), 10_000_000)]
-        dues, _ = generate_dues(t, [], date(2026, 2, 5), tl)
-        assert [d.interest_paise for d in dues] == [200_000]
-        assert (dues[0].period_start, dues[0].period_end, dues[0].due_date) == (
-            date(2026, 1, 20), date(2026, 2, 4), date(2026, 2, 5)
-        )
+class TestDecision15FullCycles:
+    def test_due_day_15_every_full_cycle_exactly_p_r(self):
+        # 15 Jan-14 Feb (31 days) and 15 Feb-14 Mar (28 days) both earn 200_000
+        t = terms(start_date=D(2026, 1, 15), due_day=15)
+        assert dues_of(t, [disburse(t)], D(2026, 4, 15)) == [200_000] * 3
+
+    def test_short_first_period_pro_rated(self):
+        # start 20 Jan, due_day 5: 16 days of the 31-day cycle [5 Jan, 4 Feb]
+        # 200_000 x 16/31 = 103_225.81 -> 103_226
+        t = terms(start_date=D(2026, 1, 20), due_day=5)
+        res = accrue(t, [disburse(t)], D(2026, 3, 5))
+        assert [d.interest_paise for d in res.periods] == [103_226, 200_000]
+        assert (res.periods[0].period_start, res.periods[0].due_date) == (D(2026, 1, 20), D(2026, 2, 5))
+
+    def test_due_day_31_first_partial_then_full(self):
+        # start 1 Feb, due_day 31 -> 28 Feb: 27 of 28 days = 192_857.14 -> 192_857
+        t = terms(start_date=D(2026, 2, 1), due_day=31)
+        res = accrue(t, [disburse(t)], D(2026, 5, 31))
+        assert [d.due_date for d in res.periods] == [
+            D(2026, 2, 28), D(2026, 3, 31), D(2026, 4, 30), D(2026, 5, 31)]
+        assert [d.interest_paise for d in res.periods] == [192_857, 200_000, 200_000, 200_000]
+
+    def test_leap_year_due_day_31(self):
+        # start 1 Feb 2028 -> 29 Feb: 28 of 29 days = 193_103.45 -> 193_103
+        t = terms(start_date=D(2028, 2, 1), due_day=31)
+        assert dues_of(t, [disburse(t)], D(2028, 2, 29)) == [193_103]
+
+    def test_leap_year_due_day_1_full(self):
+        t = terms(start_date=D(2028, 2, 1))
+        res = accrue(t, [disburse(t)], D(2028, 3, 1))
+        assert [d.interest_paise for d in res.periods] == [200_000]
+        assert res.periods[0].period_end == D(2028, 2, 29)
+
+    def test_principal_cut_pro_rates_by_cycle_days(self):
+        # Feb cycle (28 days): 14 at 10M, 14 at 5M -> 100_000 + 50_000
+        t = terms()
+        es = [disburse(t), pay(D(2026, 2, 1), 200_000), pay(D(2026, 2, 15), 5_000_000)]
+        assert dues_of(t, es, D(2026, 3, 1)) == [200_000, 150_000]
 
 
-class TestQuarterly:
-    def test_apr_and_jul_dues(self):
-        # DECISIONS #14: b1 = 1 Apr, then 1 Jul
+class TestCycles:
+    def test_quarterly_decision_14(self):
         t = terms(interest_cycle="QUARTERLY")
-        res = accrue(t, [], date(2026, 7, 1), TL_FULL)
-        assert [d.interest_paise for d in res.periods] == [600_000, 600_000]
+        res = accrue(t, [disburse(t)], D(2026, 7, 1))
+        assert [(d.due_date, d.interest_paise) for d in res.periods] == [
+            (D(2026, 4, 1), 600_000), (D(2026, 7, 1), 600_000)]
         assert res.interest_accrued_paise == 1_200_000
 
+    def test_at_maturity_lump_then_monthly(self):
+        t = terms(interest_cycle="AT_MATURITY", maturity_date=D(2026, 4, 1))
+        res = accrue(t, [disburse(t)], D(2026, 5, 1))
+        assert [(d.due_date, d.interest_paise) for d in res.periods] == [
+            (D(2026, 4, 1), 600_000), (D(2026, 5, 1), 200_000)]
 
-class TestAtMaturity:
-    def test_lump_due_then_monthly(self):
-        # single lump at maturity, then open-ended monthly accrual (#12)
-        t = terms(interest_cycle="AT_MATURITY", maturity_date=date(2026, 4, 1))
-        dues, _ = generate_dues(t, [], date(2026, 5, 1), TL_FULL)
-        assert [d.interest_paise for d in dues] == [600_000, 200_000]
-        assert [d.due_date for d in dues] == [date(2026, 4, 1), date(2026, 5, 1)]
-
-
-class TestPostMaturity:
-    def test_accrued_to_1_jun(self):
-        # #12: monthly dues keep generating past maturity_date; 5 x 200_000
-        t = terms(maturity_date=date(2026, 5, 1))
-        res = accrue(t, [], date(2026, 6, 1), TL_FULL)
+    def test_post_maturity_keeps_accruing(self):
+        # DECISIONS #12: 5 monthly dues by 1 Jun even though maturity is 1 May
+        t = terms(maturity_date=D(2026, 5, 1))
+        res = accrue(t, [disburse(t)], D(2026, 6, 1))
         assert res.interest_accrued_paise == 1_000_000
-        assert [d.interest_paise for d in res.periods] == [200_000] * 5
+
+    def test_per_year_rate_uses_365(self):
+        # 6% a year: Rs 6,000 x 31/365 = 50_958.90 -> 50_959
+        t = terms(rate=6, rate_unit="PER_YEAR")
+        assert dues_of(t, [disburse(t)], D(2026, 2, 1)) == [50_959]
 
 
 class TestOpenPeriod:
     def test_15_apr_open_tail(self):
-        # #11: [1 Apr, 14 Apr] = 14 days @ 10_000_000 -> 93_333.33 -> 93_333 p
+        # [1 Apr, 14 Apr] = 14 of 30 days -> 93_333.33 -> 93_333
         t = terms()
-        assert open_period(t, [], date(2026, 4, 15), TL_FULL) == 93_333
-        res = accrue(t, [], date(2026, 4, 15), TL_FULL)
+        res = accrue(t, [disburse(t)], D(2026, 4, 15))
         assert res.open_period_paise == 93_333
-        assert res.interest_accrued_paise == 600_000  # 1 Apr due realized (due_date <= as_of)
+        assert res.interest_accrued_paise == 600_000
 
     def test_zero_on_boundary(self):
-        assert open_period(terms(), [], date(2026, 3, 1), TL_FULL) == 0
-
-
-class TestExampleATimeline:
-    def test_march_cycle_31_days_pro_rates(self):
-        # #15: mid-cycle principal change prorates by days in THAT cycle.
-        # March cycle [1 Mar, 31 Mar] = 31 days; 10M until 14 Mar (14 days),
-        # 7M from 15 Mar (17 days): 200_000*14/31 + 200_000*17/31
-        # = 90_322.58 + 109_677.42 = 200_000 -> due stays 167_097 (sum of both)
         t = terms()
-        res = accrue(t, [], date(2026, 4, 1), TL_EXAMPLE_A)
-        apr = [d for d in res.periods if d.due_date == date(2026, 4, 1)][0]
-        assert apr.interest_paise == 167_097
-
-
-class TestPrincipalReductionMidCycle:
-    def test_halved_on_15_feb(self):
-        # #15: principal drops 10M -> 5M on 15 Feb; Feb cycle [1 Feb, 28 Feb]
-        # = 28 days, prorated 14/28 at 10M + 14/28 at 5M:
-        # 200_000*14/28 + 100_000*14/28 = 100_000 + 50_000 = 150_000
-        t = terms()
-        tl = [(date(2026, 1, 1), 10_000_000), (date(2026, 2, 15), 5_000_000)]
-        dues, _ = generate_dues(t, [], date(2026, 3, 1), tl)
-        assert [d.interest_paise for d in dues] == [200_000, 150_000]
-
-    def test_reduction_pro_rates_by_cycle_days(self):
-        # same principle: a principal cut prorates by the containing cycle's
-        # total days (here 31-day March), not by calendar month length
-        t = terms()
-        tl = [(date(2026, 1, 1), 10_000_000), (date(2026, 3, 15), 7_000_000)]
-        res = accrue(t, [], date(2026, 4, 1), tl)
-        apr = [d for d in res.periods if d.due_date == date(2026, 4, 1)][0]
-        assert apr.interest_paise == 167_097
-
-
-class TestDueDay31:
-    def test_full_cycles_earn_exactly_p_r(self):
-        # DECISIONS #15: a due day 31 cycle earns exactly P * r regardless of
-        # clamped day counts — 200_000 x4 for 28/32/30/31-day cycles
-        t = terms(start_date=date(2026, 2, 1), due_day=31)
-        tl = [(date(2026, 2, 1), 10_000_000)]
-        dues, _ = generate_dues(t, [], date(2026, 5, 31), tl)
-        assert [d.due_date for d in dues] == [
-            date(2026, 2, 28),
-            date(2026, 3, 31),
-            date(2026, 4, 30),
-            date(2026, 5, 31),
-        ]
-        assert [d.interest_paise for d in dues] == [200_000] * 4
-
-
-class TestLeapYear:
-    def test_due_day_1_period_spans_29_feb(self):
-        # 29/29 = full month -> 200_000 p
-        t = terms(start_date=date(2028, 2, 1), due_day=1)
-        tl = [(date(2028, 2, 1), 10_000_000)]
-        dues, _ = generate_dues(t, [], date(2028, 3, 1), tl)
-        assert [d.interest_paise for d in dues] == [200_000]
-        assert (dues[0].period_end, dues[0].due_date) == (date(2028, 2, 29), date(2028, 3, 1))
-
-    def test_due_day_31_clamps_to_29_feb(self):
-        # period [1 Feb, 28 Feb] = 28 of 29 leap days -> 193_103 p
-        t = terms(start_date=date(2028, 2, 1), due_day=31)
-        tl = [(date(2028, 2, 1), 10_000_000)]
-        dues, _ = generate_dues(t, [], date(2028, 2, 29), tl)
-        assert [d.interest_paise for d in dues] == [193_103]
-        assert dues[0].due_date == date(2028, 2, 29)
-
-
-class TestZeroPrincipal:
-    def test_open_zero_and_no_projection(self):
-        # P = 0 from 15 Apr: the open tail [1 Apr, 14 Apr] realizes as a
-        # CLOSING DUE on 15 Apr (payoff rule, §3.1); no dues after P = 0.
-        t = terms()
-        assert open_period(t, [], date(2026, 4, 20), TL_ZEROED_15_APR) == 0
-        assert projected_due(t, [], date(2026, 4, 20), TL_ZEROED_15_APR) is None
-        res = accrue(t, [], date(2026, 4, 20), TL_ZEROED_15_APR)
-        assert [d.interest_paise for d in res.periods] == [200_000, 200_000, 200_000, 93_333]
-        assert [d.due_date for d in res.periods] == [
-            date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1), date(2026, 4, 15)
-        ]
-        assert res.interest_accrued_paise == 693_333
-
-
-class TestPerYear:
-    def test_january_31_days(self):
-        # P * r/100 * 31/365 = 600_000 * 31/365 = 50_958.90 -> 50_959 p
-        t = terms(rate=Decimal("6"), rate_unit="PER_YEAR")
-        dues, _ = generate_dues(t, [], date(2026, 2, 1), TL_FULL)
-        assert [d.interest_paise for d in dues] == [50_959]
+        assert accrue(t, [disburse(t)], D(2026, 3, 1)).open_period_paise == 0
 
 
 class TestNotImplemented:
     def test_compound_raises(self):
         t = terms(interest_type="COMPOUND")
         with pytest.raises(NotImplementedError):
-            accrue(t, [], date(2026, 2, 1), TL_FULL)
+            compute(t, [disburse(t)], D(2026, 2, 1))
+
+    def test_capitalise_raises(self):
+        t = terms()
+        with pytest.raises(NotImplementedError):
+            compute(t, [disburse(t), entry("CAPITALISE", D(2026, 2, 1), 1)], D(2026, 2, 1))
