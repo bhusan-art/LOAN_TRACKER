@@ -22,7 +22,12 @@ funds which loan, and a daily Telegram/email digest of what to pay and collect.
    ```
 2. `create-user` asks for a password and prints a **setup key**. Add it in Google
    Authenticator / Microsoft Authenticator / Aegis ("enter a setup key").
-3. Open **http://localhost:8000** and log in with the password and the 6-digit code.
+3. Open **http://localhost:8000** (or the `APP_PORT` you set in `.env`) and log in with the
+   password and the 6-digit code.
+
+   Port already in use? Set `APP_PORT` (and `DB_PORT` if 5432 is taken) in `.env`, then
+   `docker compose up -d`. On Windows, `netsh interface ipv4 show excludedportrange protocol=tcp`
+   lists ports Windows has reserved.
 
 Want to try it with sample data first? `docker compose exec app python -m loan_tracker.cli demo-data`
 (creates the worked examples A–C; names end in "(demo)").

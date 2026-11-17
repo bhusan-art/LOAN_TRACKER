@@ -1,4 +1,4 @@
-# Everything: `docker compose up -d --build`, then open http://localhost:8000
+# Everything: `docker compose up -d --build`, then open http://localhost:<APP_PORT>
 # Database only (for development): `docker compose up -d db`
 services:
   db:
@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       TZ: Asia/Kolkata
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8000:8000"   # put a TLS reverse proxy in front for phone access (deploy/README.md)
+      - "127.0.0.1:${APP_PORT:-8000}:8000"   # set APP_PORT in .env if 8000 is taken
 
   scheduler:
     build: .
