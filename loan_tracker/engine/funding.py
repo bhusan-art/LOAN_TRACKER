@@ -59,10 +59,8 @@ def spread(
     )
 
 
-def _next_due_date(r: EngineResult) -> date | None:
-    unpaid = [d.due.due_date for d in r.dues if d.outstanding_paise > 0]
-    if unpaid:
-        return min(unpaid)
+def _next_scheduled(r: EngineResult) -> date | None:
+    """Next regular due date (the schedule, not arrears: arrears are RISK's job)."""
     return r.projected_due.due_date if r.projected_due else None
 
 
@@ -81,25 +79,22 @@ def mismatch_check(
         g_res = results.get(link.given_loan_id)
         if t_res is None or g_res is None or t_res.loan_status == "CLOSED":
             continue
-        pay_date = _next_due_date(t_res)
+        owed = t_res.balances.principal_outstanding_paise
         if link.given_loan_id in written_off:
             flags.append(MismatchFlag(
                 link.taken_loan_id, link.given_loan_id, "EXPOSURE",
-                f"Funded loan written off: {t_res.balances.principal_outstanding_paise} paise "
-                f"still owed on borrowed loan {link.taken_loan_id}.",
-            ))
+                "Funded loan written off; the borrowed principal is still owed.",
+                amount_paise=owed))
             continue
-        recv_date = _next_due_date(g_res)
+        pay_date, recv_date = _next_scheduled(t_res), _next_scheduled(g_res)
         if pay_date and recv_date and recv_date > pay_date:
             flags.append(MismatchFlag(
                 link.taken_loan_id, link.given_loan_id, "WARNING",
-                f"Payable before receivable: you pay on {pay_date}, you receive on {recv_date}. {ADVICE}",
-            ))
+                f"Payable before receivable. {ADVICE}", pay_date=pay_date, receive_date=recv_date))
         if any(d.status == "OVERDUE" for d in g_res.dues):
             interest = t_res.projected_due.interest_paise if t_res.projected_due else 0
             flags.append(MismatchFlag(
                 link.taken_loan_id, link.given_loan_id, "RISK",
-                f"Borrower overdue: next {interest} paise on borrowed loan "
-                f"{link.taken_loan_id} must come from own funds.",
-            ))
+                "Borrower overdue: the next payable interest must come from own funds.",
+                amount_paise=interest))
     return flags

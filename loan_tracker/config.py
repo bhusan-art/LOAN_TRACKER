@@ -15,7 +15,7 @@ class Settings:
     database_url: str = field(default_factory=lambda: _env(
         "DATABASE_URL", "postgresql+psycopg://loan_tracker:change-me@127.0.0.1:5432/loan_tracker"))
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", "dev-only-change-me"))
-    timezone: str = field(default_factory=lambda: _env("TZ", "Asia/Kolkata"))
+    timezone: str = field(default_factory=lambda: _env("APP_TIMEZONE", "Asia/Kolkata"))
     secure_cookies: bool = field(default_factory=lambda: _env("SECURE_COOKIES", "0") == "1")
     reminder_days_before: int = field(default_factory=lambda: int(_env("REMINDER_DAYS_BEFORE", "3")))
     concentration_flag_pct: int = field(default_factory=lambda: int(_env("CONCENTRATION_FLAG_PCT", "25")))
@@ -27,6 +27,10 @@ class Settings:
     smtp_password: str = field(default_factory=lambda: _env("SMTP_PASSWORD"))
     email_to: str = field(default_factory=lambda: _env("EMAIL_TO"))
     email_from: str = field(default_factory=lambda: _env("EMAIL_FROM"))
+    # comma list of books whose routine reminders are muted, e.g. "PERSONAL".
+    # Payments YOU owe that are due today or overdue are never muted.
+    mute_books: frozenset = field(default_factory=lambda: frozenset(
+        b.strip().upper() for b in _env("MUTE_BOOKS").split(",") if b.strip()))
 
 
 def get_settings() -> Settings:

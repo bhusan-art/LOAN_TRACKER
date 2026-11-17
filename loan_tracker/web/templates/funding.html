@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Funding links{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Which borrowed money funds which loan</h1>
+  <div class="scroll"><table class="num">
+    <tr><th>Borrowed from</th><th>Lent to</th><th>Amount</th><th>Spread / month</th></tr>
+    {% for l, sp in links %}<tr class="{{ 'neg' if sp.negative }}">
+      <td class="left"><a href="/loans/{{ l.taken_loan_id }}">{{ by_id[l.taken_loan_id].loan.party.name }}</a></td>
+      <td class="left"><a href="/loans/{{ l.given_loan_id }}">{{ by_id[l.given_loan_id].loan.party.name }}</a>
+        {% if sp.cross_book %}<span class="tag warn">cross-book</span>{% endif %}</td>
+      <td>{{ l.amount_paise|inr(decimals=False) }}</td><td>{{ sp.spread_paise_per_cycle|inr }}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No links yet.</td></tr>{% endfor %}
+  </table></div>
+  {% if idle %}<p class="flash err">Borrowed money not linked to any loan costs {{ idle|inr }} a month.</p>{% endif %}
+</section>
+<section class="card">
+  <h2>Add a link</h2>
+  <form method="post" action="/funding" class="stack">
+    <label>Borrowed money (taken loan) <select name="taken_loan_id" required>
+      {% for r in taken %}<option value="{{ r.loan.id }}">{{ r.loan.party.name }} · {{ r.loan.book|lower }} · {{ r.loan.principal_paise|inr(decimals=False) }} at {{ r.loan.rate|pct }}</option>{% endfor %}</select></label>
+    <label>Lent to (given loan) <select name="given_loan_id" required>
+      {% for r in given %}<option value="{{ r.loan.id }}">{{ r.loan.party.name }} · {{ r.loan.book|lower }} · {{ r.loan.principal_paise|inr(decimals=False) }} at {{ r.loan.rate|pct }}</option>{% endfor %}</select></label>
+    <label>Amount (₹) <input name="amount" inputmode="decimal" required></label>
+    <label>Date <input type="date" name="link_date" value="{{ today.isoformat() }}"></label>
+    <label class="radio"><input type="checkbox" name="confirm_cross_book" value="1"> I confirm mixing business and personal money (cross-book)</label>
+    <button>Save link</button>
+  </form>
+</section>
+{% endblock %}

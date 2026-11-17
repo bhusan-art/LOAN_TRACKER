@@ -26,12 +26,13 @@ class TestExampleB:
     def test_payable_before_receivable_warning(self):
         # on 2 Jan: Suresh is next due 5 Jan, Ravi only on 10 Jan
         flags = mismatch_check([LINK], results(D(2026, 1, 2)))
-        assert [f.kind for f in flags] == ["WARNING"]
+        assert [(f.kind, f.pay_date, f.receive_date) for f in flags] == [
+            ("WARNING", D(2026, 1, 5), D(2026, 1, 10))]
 
     def test_risk_when_ravi_overdue(self):
         flags = mismatch_check([LINK], results(D(2026, 2, 20)))
         assert "RISK" in [f.kind for f in flags]
-        assert "150000 paise" in [f for f in flags if f.kind == "RISK"][0].message
+        assert [f for f in flags if f.kind == "RISK"][0].amount_paise == 150_000
 
     def test_no_risk_when_ravi_pays(self):
         # Ravi's dues: 10 Jan = 9 of 31 days (72_581) + 10 Feb full (250_000)
@@ -41,7 +42,7 @@ class TestExampleB:
     def test_written_off_exposure(self):
         flags = mismatch_check([LINK], results(D(2026, 1, 2)), written_off=frozenset({20}))
         assert flags[0].kind == "EXPOSURE"
-        assert str(P) in flags[0].message
+        assert flags[0].amount_paise == P
 
 
 class TestExampleC:

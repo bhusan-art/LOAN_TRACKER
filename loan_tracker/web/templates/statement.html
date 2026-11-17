@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Statement · {{ loan.party.name }}{% endblock %}
+{% block content %}
+<article class="statement">
+  <h1>Loan statement</h1>
+  <p><b>{{ loan.party.name }}</b>{% if loan.party.phone %} · {{ loan.party.phone }}{% endif %}<br>
+    {{ "Loan given" if loan.direction == "GIVEN" else "Loan taken" }} on {{ loan.start_date|dmy }}:
+    {{ loan.principal_paise|inr }} at {{ loan.rate|pct }} {{ "per month" if loan.rate_unit == "PER_MONTH" else "per year" }}<br>
+    Statement date: {{ today|dmy }}</p>
+  <table class="num">
+    <tr><th>Date</th><th>Entry</th><th>Amount</th><th>Applied to</th></tr>
+    {% for e in loan.entries if e.type != "REVERSAL" and e.id not in reversed_ids %}
+    <tr><td class="left">{{ e.entry_date|dmy }}</td><td>{{ e.type|lower|replace("_"," ") }}</td>
+      <td>{{ e.amount_paise|inr if e.amount_paise else (e.new_rate|pct if e.new_rate is not none else "") }}</td>
+      <td class="muted">{% for a in r.allocations if a.entry_id == e.id %}{{ a.bucket|lower }} {{ a.amount_paise|inr }}{{ ", " if not loop.last }}{% endfor %}</td></tr>
+    {% endfor %}
+  </table>
+  <h2>Interest dues</h2>
+  <table class="num">
+    <tr><th>Due date</th><th>Interest</th><th>Paid</th><th>Balance</th></tr>
+    {% for d in r.dues %}<tr><td class="left">{{ d.due.due_date|dmy }}</td><td>{{ d.due.interest_paise|inr }}</td>
+      <td>{{ (d.paid_paise + d.waived_paise)|inr }}</td><td>{{ d.outstanding_paise|inr }}</td></tr>{% endfor %}
+  </table>
+  <table class="num totals">
+    <tr><td class="left">Principal outstanding</td><td>{{ r.balances.principal_outstanding_paise|inr }}</td></tr>
+    <tr><td class="left">Interest outstanding</td><td>{{ r.balances.interest_outstanding_paise|inr }}</td></tr>
+    <tr><td class="left">Interest since last due date</td><td>{{ r.balances.open_period_paise|inr }}</td></tr>
+    <tr class="total"><td class="left">Amount to close the loan today</td><td>{{ r.balances.payoff_today_paise|inr }}</td></tr>
+  </table>
+  <p class="no-print"><button onclick="window.print()">Print / save as PDF</button></p>
+</article>
+{% endblock %}

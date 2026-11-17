@@ -53,6 +53,7 @@ class TodayItem:
     amount_paise: int
     status: str
     overdue_days: int = 0
+    count: int = 1
 
 
 @dataclass
@@ -76,6 +77,7 @@ class Dashboard:
     pay_soon: list[TodayItem] = field(default_factory=list)
     collect_soon: list[TodayItem] = field(default_factory=list)
     warnings: list[eng.MismatchFlag] = field(default_factory=list)
+    warning_text: list[str] = field(default_factory=list)
     negative_spreads: list = field(default_factory=list)
     active_loans: int = 0
 
@@ -130,10 +132,12 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
     horizon = as_of + timedelta(days=soon_days)
     for r in rows:
         target = db.pay_soon if r.loan.direction == "TAKEN" else db.collect_soon
-        for d in r.result.dues:
-            if d.outstanding_paise > 0:
-                target.append(TodayItem(r.loan.id, r.loan.party.name, r.loan.book, r.loan.direction,
-                                        d.due.due_date, d.outstanding_paise, d.status, d.overdue_days))
+        unpaid = [d for d in r.result.dues if d.outstanding_paise > 0]
+        if unpaid:  # one line per loan: total still owed on past dues, oldest date
+            worst = "OVERDUE" if any(d.status == "OVERDUE" for d in unpaid) else unpaid[0].status
+            target.append(TodayItem(r.loan.id, r.loan.party.name, r.loan.book, r.loan.direction,
+                                    unpaid[0].due.due_date, sum(d.outstanding_paise for d in unpaid),
+                                    worst, max(d.overdue_days for d in unpaid), len(unpaid)))
         p = r.result.projected_due
         if p and p.due_date <= horizon and r.loan.status not in ("SETTLED", "WRITTEN_OFF"):
             target.append(TodayItem(r.loan.id, r.loan.party.name, r.loan.book, r.loan.direction,
@@ -151,7 +155,30 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
     results = {r.loan.id: r.result for r in rows}
     written_off = frozenset(r.loan.id for r in rows if r.loan.status == "WRITTEN_OFF")
     db.warnings = eng.mismatch_check(shown_links, results, written_off)
+    names = {r.loan.id: r.loan.party.name for r in rows}
+    db.warning_text = [describe_flag(f, names) for f in db.warnings]
+    db.warning_text += [
+        f"Negative spread: {names[sp.link.given_loan_id]}'s loan earns {_inr(-sp.spread_paise_per_cycle)} a month "
+        f"less than borrowing from {names[sp.link.taken_loan_id]} costs." for sp in db.negative_spreads]
     return db
+
+
+def _inr(paise: int) -> str:
+    from loan_tracker.web.formatting import inr
+    return inr(paise)
+
+
+def describe_flag(f: eng.MismatchFlag, names: dict[int, str]) -> str:
+    """Owner-facing wording for an engine mismatch flag."""
+    from loan_tracker.web.formatting import dmy
+    lender, borrower = names.get(f.taken_loan_id, f"loan {f.taken_loan_id}"), names.get(f.given_loan_id, "")
+    if f.kind == "WARNING":
+        return (f"You pay {lender} on {dmy(f.pay_date)} but {borrower} pays you on {dmy(f.receive_date)}. "
+                f"Consider moving {borrower}'s due day a few days earlier.")
+    if f.kind == "RISK":
+        return (f"{borrower} is overdue, so your next {_inr(f.amount_paise or 0)} to {lender} "
+                f"must come from your own money.")
+    return f"{borrower}'s loan is written off, but you still owe {lender} {_inr(f.amount_paise or 0)}."
 
 
 @dataclass
@@ -182,10 +209,12 @@ def cash_calendar(s: Session, as_of: date, days: int = 30, book: str | None = No
         if loan.status in ("SETTLED", "WRITTEN_OFF", "CLOSED"):
             continue
         incoming = loan.direction == "GIVEN"
-        for d in row.result.dues:
-            if d.outstanding_paise > 0:
-                add(as_of, TodayItem(loan.id, loan.party.name, loan.book, loan.direction,
-                                     d.due.due_date, d.outstanding_paise, d.status, d.overdue_days), incoming)
+        unpaid = [d for d in row.result.dues if d.outstanding_paise > 0]
+        if unpaid:  # arrears: one line per loan, shown on today
+            add(as_of, TodayItem(loan.id, loan.party.name, loan.book, loan.direction,
+                                 unpaid[0].due.due_date, sum(d.outstanding_paise for d in unpaid),
+                                 "OVERDUE" if any(d.status == "OVERDUE" for d in unpaid) else "PARTIAL",
+                                 max(d.overdue_days for d in unpaid), len(unpaid)), incoming)
         future = compute_loan(loan, horizon)
         for d in future.dues:
             if as_of < d.due.due_date <= horizon:

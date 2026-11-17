@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Record payment{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Record a payment</h1>
+  <form method="post" action="/quick" class="stack">
+    <label>Loan
+      <select name="loan_id" required>
+        <option value="">Choose…</option>
+        {% for r in rows %}<option value="{{ r.loan.id }}">{{ "←" if r.loan.direction == "GIVEN" else "→" }} {{ r.loan.party.name }}
+          · {{ r.loan.book|lower }} · due {{ r.result.balances.interest_outstanding_paise|inr(decimals=False) }}
+          · payoff {{ r.result.balances.payoff_today_paise|inr(decimals=False) }}</option>{% endfor %}
+      </select></label>
+    <label>Amount (₹) <input name="amount" inputmode="decimal" required></label>
+    <div class="row">
+      <label>Date <input type="date" name="entry_date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}"></label>
+      <label>Mode <select name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></label>
+    </div>
+    <label>Reference <input name="reference"></label>
+    <button>Save</button>
+  </form>
+  <p class="muted">← money you receive (you lent) · → money you pay (you borrowed)</p>
+</section>
+{% endblock %}

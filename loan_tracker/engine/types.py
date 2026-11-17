@@ -132,6 +132,9 @@ class MismatchFlag:
     given_loan_id: int | None
     kind: MismatchKind
     message: str
+    pay_date: date | None = None       # WARNING: your next payable due date
+    receive_date: date | None = None   # WARNING: the funded borrower's next due date
+    amount_paise: int | None = None    # RISK: next payable interest; EXPOSURE: principal still owed
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Cash calendar{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="row between"><h1>Next {{ days }} days</h1>
+    <span>{% for n in [30, 60, 90] %}<a class="{{ 'button' if n == days else 'button secondary' }}" href="?days={{ n }}">{{ n }}</a> {% endfor %}</span></div>
+  <p class="muted">Expected interest (and principal at maturity), assuming no other payments.
+    Unpaid past dues are shown on today. The running total starts at ₹0 because the app doesn't know your bank balance.</p>
+</section>
+{% for day in cal %}
+<section class="card day {{ 'neg' if day.running_paise < 0 }}">
+  <div class="row between"><b>{{ day.day|dmy }}</b>
+    <span class="muted">net {{ day.net_paise|inr(decimals=False) }} · running <b class="{{ 'bad' if day.running_paise < 0 }}">{{ day.running_paise|inr(decimals=False) }}</b></span></div>
+  <ul class="flows">
+    {% for i in day.money_in %}<li class="in"><span>+ {{ i.amount_paise|inr(decimals=False) }}</span>
+      <a href="/loans/{{ i.loan_id }}">{{ i.party }}</a> <span class="muted">{{ note(i) }}</span></li>{% endfor %}
+    {% for i in day.money_out %}<li class="out"><span>− {{ i.amount_paise|inr(decimals=False) }}</span>
+      <a href="/loans/{{ i.loan_id }}">{{ i.party }}</a> <span class="muted">{{ note(i) }}</span></li>{% endfor %}
+  </ul>
+</section>
+{% else %}<section class="card"><p class="muted">Nothing expected.</p></section>{% endfor %}
+{% endblock %}
+{% macro note(i) %}{% if i.status == "PRINCIPAL" %}principal at maturity{% elif i.count > 1 %}{{ i.count }} unpaid dues{% elif i.status in ("OVERDUE", "PARTIAL") %}unpaid{% else %}interest{% endif %}{% if i.book == "BUSINESS" %} · biz{% else %} · per{% endif %}{% endmacro %}
