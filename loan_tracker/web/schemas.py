@@ -128,6 +128,14 @@ class SimulateNewIn(_Body):
     days: Literal[30, 60, 90, 180] = 60
 
 
+class BankLinkIn(_Body):
+    entry_id: Annotated[StrictInt, Field(gt=0)]
+
+
+class BankRecordIn(_Body):
+    loan_id: Annotated[StrictInt, Field(gt=0)]
+
+
 def describe(errors: list[dict]) -> str:
     """One readable line from pydantic errors: 'book: Input should be ...; rate: ...'."""
     parts = []

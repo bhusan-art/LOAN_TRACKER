@@ -109,6 +109,8 @@ ACTION_LABELS = {
     "CASH_ACCOUNT_ADDED": ("Account added", "purple"), "CASH_BALANCE_SET": ("Balance updated", "gray"),
     "CASH_ACCOUNT_CLOSED": ("Account closed", "orange"), "CASH_ACCOUNT_REOPENED": ("Account reopened", "purple"),
     "PLAN_ADDED": ("Plan added", "purple"), "PLAN_CANCELLED": ("Plan cancelled", "orange"),
+    "BANK_IMPORTED": ("Statement imported", "purple"), "BANK_LINKED": ("Bank line linked", "green"),
+    "BANK_IGNORED": ("Bank line ignored", "gray"), "BANK_UNDONE": ("Bank line reopened", "orange"),
 }
 
 KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}

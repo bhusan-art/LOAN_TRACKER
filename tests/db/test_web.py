@@ -345,7 +345,7 @@ def test_cash_pages_and_api(client):
     assert bad.status_code == 400 and "direction" in bad.json()["detail"]
     pl = client.post("/api/cash/planned", json={"book": "BUSINESS", "item_date": "2026-04-03", "direction": "OUT",
                                                 "amount_paise": 100, "description": "tea"}).json()["id"]
-    assert client.post(f"/api/cash/planned/{pl}/cancel").json()["cancelled"]
+    assert client.post(f"/api/cash/planned/{pl}/cancel", json={}).json()["cancelled"]
     assert client.post(f"/api/cash/accounts/{acc}/balance", json={"balance_paise": 5}).status_code == 201
     log = client.get("/activity").text
     assert "Account added" in log and "Balance updated" in log and "Plan added" in log and "Plan cancelled" in log
@@ -390,3 +390,83 @@ def test_simulator_explains_arrears_first(client):
                                           "due_day": 1}).json()["id"]
     page = client.get(f"/simulate?mode=loan&run=1&loan_id={lid}&kind=EXTRA_PAYMENT&on=2026-05-01&amount=50000").text
     assert "₹6,000.00 of interest is unpaid today" in page
+
+
+
+def test_api_posts_must_be_json(client):
+    """A cross-site HTML form can only send form or text bodies; the API refuses them."""
+    login(client)
+    pid = client.post("/api/parties", json={"name": "J"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 100_000, "start_date": "2026-01-01",
+                                          "rate": "2"}).json()["id"]
+    eid = client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 100}).json()["id"]
+    for body in ({"data": {"note": "x"}}, {"content": "note=x", "headers": {"content-type": "text/plain"}}, {}):
+        r = client.post(f"/api/entries/{eid}/reverse", **body)
+        assert r.status_code == 415, body
+    assert client.post(f"/api/entries/{eid}/reverse", json={}).status_code == 201
+
+
+STATEMENT = b"""Date,Narration,Chq./Ref.No.,Withdrawal Amt.,Deposit Amt.,Closing Balance
+05/02/26,UPI-RAVI KUMAR-603612345,603612345,,2000.00,26500.00
+06/02/26,UPI-RAVI KUMAR-603612999,603612999,,1000.00,27500.00
+07/02/26,SWIGGY ORDER,,350.00,,27150.00
+"""
+
+
+def test_bank_import_flow(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi Kumar"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "PERSONAL",
+                                          "principal_paise": 10_000_000, "start_date": "2026-01-01", "rate": "2",
+                                          "due_day": 1}).json()["id"]
+    first = client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 200_000,
+                                                          "entry_date": "2026-02-04"}).json()["id"]
+    assert "Add a bank account" in client.get("/bank").text
+    post(client, "/cash/accounts", {"name": "HDFC", "kind": "BANK", "book": "PERSONAL", "balance": "0"}, page="/cash")
+    acc = client.get("/api/cash").json()["accounts"][0]["id"]
+    r = client.post("/bank/upload", data={"account_id": str(acc), "update_balance": "1", "csrf_token": tok(client, "/bank")},
+                    files={"file": ("hdfc-feb.csv", STATEMENT, "text/csv")})
+    # the account was opened today (1 Apr) with a balance, so a February statement does not overwrite it
+    assert "3 new transaction(s) imported. Balance not changed: you have a newer one (01 Apr 2026)." in r.text
+    assert "Review bank lines" in r.text and "Link 1 already recorded" in r.text
+    assert "Already recorded" in r.text and "name &#39;ravi&#39; in the narration" in r.text
+    imp = client.get("/api/bank/imports").json()[0]["id"]
+    # no token, no upload
+    bad = client.post("/bank/upload", data={"account_id": str(acc)}, files={"file": ("x.csv", STATEMENT, "text/csv")})
+    assert "This form expired" in bad.text
+    # link the already-recorded Rs 2,000
+    r = post(client, f"/bank/imports/{imp}/link-exact", {}, page=f"/bank/imports/{imp}")
+    assert "1 bank line(s) linked" in r.text
+    lines = {t["amount_paise"]: t for t in client.get(f"/api/bank/imports/{imp}").json()}
+    assert lines[200_000]["status"] == "LINKED" and lines[200_000]["ledger_entry_id"] == first
+    # record the Rs 1,000 as a payment: receipt issued
+    t2 = lines[100_000]
+    assert t2["suggestions"][0]["loan_id"] == lid
+    r = post(client, f"/bank/txns/{t2['id']}/record", {"loan_id": str(lid)}, page=f"/bank/imports/{imp}",
+             headers={"referer": f"/bank/imports/{imp}"})
+    assert "Payment of ₹1,000.00 recorded on LN-" in r.text and "receipt RCPT-2026-" in r.text
+    # ignore the Swiggy order, then undo it through the API
+    t3 = lines[-35_000]
+    post(client, f"/bank/txns/{t3['id']}/ignore", {"note": "food"}, page=f"/bank/imports/{imp}")
+    assert client.post(f"/api/bank/txns/{t3['id']}/undo", json={}).json()["status"] == "NEW"
+    assert client.post(f"/api/bank/txns/{t3['id']}/record", json={"loan_id": lid}).status_code == 400  # money out
+    assert client.post(f"/api/bank/txns/{t3['id']}/ignore", json={"note": "food"}).json()["status"] == "IGNORED"
+    page = client.get(f"/bank/imports/{imp}").text
+    assert "Nothing left to review" in page
+    assert "Linked to entry #" in client.get(f"/bank/imports/{imp}?show=all").text
+    # re-upload: nothing new
+    r = client.post("/bank/upload", data={"account_id": str(acc), "csrf_token": tok(client, "/bank")},
+                    files={"file": ("hdfc-feb.csv", STATEMENT, "text/csv")})
+    assert "0 new transaction(s) imported; 3 already imported earlier were skipped." in r.text
+    log = client.get("/activity").text
+    assert "Statement imported" in log and "Bank line linked" in log and "Bank line ignored" in log
+
+
+def test_bank_upload_bad_file_shows_message(client):
+    login(client)
+    post(client, "/cash/accounts", {"name": "HDFC", "kind": "BANK", "book": "PERSONAL", "balance": "0"}, page="/cash")
+    acc = client.get("/api/cash").json()["accounts"][0]["id"]
+    r = client.post("/bank/upload", data={"account_id": str(acc), "csrf_token": tok(client, "/bank")},
+                    files={"file": ("photo.csv", b"\x89PNG\r\n\x1a\n...", "text/csv")}, headers={"referer": "/bank"})
+    assert "could not read the statement" in r.text

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Form, Request
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -30,7 +30,8 @@ from loan_tracker.db.session import session_factory
 from loan_tracker.engine.calendar import _add_months as add_months
 from loan_tracker.web import formatting as fmt
 from loan_tracker.web.schemas import (CashAccountIn, CashBalanceIn, ContactIn, EntryIn, FundingIn, LoanIn,
-                                      PartyIn, PlannedIn, ReverseIn, SimulateLoanIn, SimulateNewIn, describe)
+                                      PartyIn, PlannedIn, ReverseIn, SimulateLoanIn, SimulateNewIn,
+                                      BankLinkIn, BankRecordIn, describe)
 
 HERE = Path(__file__).resolve().parent
 BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
@@ -52,6 +53,18 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.state.failed_logins = defaultdict(deque)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
+    @app.middleware("http")
+    async def api_posts_are_json(request: Request, call_next):
+        """CSRF guard for the JSON API: a cross-site HTML form cannot send
+        application/json, so every POST under /api/ must declare it, including
+        endpoints that take no body (send {})."""
+        if request.method == "POST" and request.url.path.startswith("/api/"):
+            ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return JSONResponse({"detail": "send the request as JSON (Content-Type: application/json)"},
+                                    status_code=415)
+        return await call_next(request)
+
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
@@ -549,6 +562,97 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                 error = str(exc)
         return render(request, "simulate.html", form=form, loans=loans, result=result, new=new, sim_error=error)
 
+    @app.get("/bank", response_class=HTMLResponse)
+    def bank_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        accounts = [a for a, _ in svc.latest_balances(s) if a.kind in ("BANK", "WALLET")]
+        imports = svc.bank_imports(s)
+        open_counts = {i.id: sum(1 for t in svc.bank_txns(s, i.id) if t.status == "NEW") for i in imports}
+        return render(request, "bank.html", accounts=accounts, imports=imports, open_counts=open_counts)
+
+    @app.post("/bank/upload", dependencies=[Depends(check_csrf)])
+    async def bank_upload(request: Request, account_id: int = Form(...), file: UploadFile = File(...),
+                          update_balance: str = Form(""), username: str = Depends(user),
+                          s: Session = Depends(db)):
+        from loan_tracker.bankimport import MAX_BYTES
+        data = await file.read(MAX_BYTES + 1)
+        imp, bal = svc.import_statement(s, account_id, data, file_name=file.filename or "statement.csv",
+                                        actor=username, as_of=today(), update_balance=update_balance == "1")
+        log(request, s, "BANK_IMPORTED", "bank_import", imp.id, name=imp.file_name, count=imp.new_count,
+            note=f"{imp.row_count} lines, {imp.row_count - imp.new_count} already imported")
+        msg = f"{imp.new_count} new transaction(s) imported"
+        if imp.row_count != imp.new_count:
+            msg += f"; {imp.row_count - imp.new_count} already imported earlier were skipped"
+        if bal:
+            msg += f". Balance set to {fmt.inr(bal.balance_paise)} as on {fmt.dmy(bal.as_of)}"
+        elif update_balance == "1":
+            newest = next((b for a, b in svc.latest_balances(s, include_inactive=True)
+                           if a.id == account_id and b is not None), None)
+            if newest is not None and newest.as_of > imp.period_end:
+                msg += f". Balance not changed: you have a newer one ({fmt.dmy(newest.as_of)})"
+        return back(request, f"/bank/imports/{imp.id}", flash=msg + ".")
+
+    @app.get("/bank/imports/{import_id}", response_class=HTMLResponse)
+    def bank_import_page(import_id: int, request: Request, show: str = "open", _: str = Depends(user),
+                         s: Session = Depends(db)):
+        imp = s.get(m.BankImport, import_id)
+        if imp is None:
+            raise svc.ServiceError(f"import {import_id} not found")
+        t = today()
+        txns = svc.bank_txns(s, import_id)
+        counts = {k: sum(1 for x in txns if x.status == k) for k in ("NEW", "LINKED", "RECORDED", "IGNORED")}
+        shown = [x for x in txns if x.status == "NEW"] if show == "open" else txns
+        sugg = svc.txn_suggestions(s, t, shown)
+        exact = sum(1 for v in sugg.values() if sum(1 for x in v if x.kind == "EXISTING") == 1)
+        loans = [r for r in svc.portfolio(s, t) if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
+        reversed_ids = set(s.scalars(select(m.LedgerEntry.reverses_id).where(m.LedgerEntry.reverses_id.is_not(None))))
+        ids = [x.ledger_entry_id for x in shown if x.ledger_entry_id]
+        entry_loans = dict(s.execute(select(m.LedgerEntry.id, m.LedgerEntry.loan_id)
+                                     .where(m.LedgerEntry.id.in_(ids))).all()) if ids else {}
+        names = {r.loan.id: r.loan.party.name for r in loans}
+        return render(request, "bank_import.html", imp=imp, txns=shown, counts=counts, show=show, sugg=sugg,
+                      exact=exact, loans=loans, reversed_ids=reversed_ids, entry_loans=entry_loans, names=names)
+
+    @app.post("/bank/imports/{import_id}/link-exact", dependencies=[Depends(check_csrf)])
+    def bank_link_exact(import_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        done = svc.link_exact_matches(s, import_id, today())
+        for t in done:
+            log(request, s, "BANK_LINKED", "bank_txn", t.id, entry=t.ledger_entry_id, amount_paise=abs(t.amount_paise))
+        return back(request, f"/bank/imports/{import_id}", flash=f"{len(done)} bank line(s) linked to entries "
+                                                                 "already in your ledger.")
+
+    def _txn_back(request: Request, t, msg: str):
+        return back(request, referer(request, f"/bank/imports/{t.import_id}"), flash=msg)
+
+    @app.post("/bank/txns/{txn_id}/link", dependencies=[Depends(check_csrf)])
+    def bank_txn_link(txn_id: int, request: Request, entry_id: int = Form(...), _: str = Depends(user),
+                      s: Session = Depends(db)):
+        t = svc.link_bank_txn(s, txn_id, entry_id)
+        log(request, s, "BANK_LINKED", "bank_txn", t.id, entry=entry_id, amount_paise=abs(t.amount_paise))
+        return _txn_back(request, t, f"Linked to entry #{entry_id}.")
+
+    @app.post("/bank/txns/{txn_id}/record", dependencies=[Depends(check_csrf)])
+    def bank_txn_record(txn_id: int, request: Request, loan_id: int = Form(...), _: str = Depends(user),
+                        s: Session = Depends(db)):
+        t, e = svc.record_bank_txn(s, txn_id, loan_id, today())
+        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
+            amount_paise=e.amount_paise, entry_date=e.entry_date, via="bank import")
+        rc = receipt_of(s, e.id)
+        return _txn_back(request, t, f"Payment of {fmt.inr(e.amount_paise)} recorded on LN-{loan_id}"
+                                     + (f"; receipt {rc.number} issued." if rc else "."))
+
+    @app.post("/bank/txns/{txn_id}/ignore", dependencies=[Depends(check_csrf)])
+    def bank_txn_ignore(txn_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
+                        s: Session = Depends(db)):
+        t = svc.ignore_bank_txn(s, txn_id, note)
+        log(request, s, "BANK_IGNORED", "bank_txn", t.id, amount_paise=abs(t.amount_paise), note=t.note)
+        return _txn_back(request, t, "Marked as not loan money.")
+
+    @app.post("/bank/txns/{txn_id}/undo", dependencies=[Depends(check_csrf)])
+    def bank_txn_undo(txn_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        t = svc.undo_bank_txn(s, txn_id)
+        log(request, s, "BANK_UNDONE", "bank_txn", t.id, amount_paise=abs(t.amount_paise))
+        return _txn_back(request, t, "Back to open.")
+
     @app.get("/cash", response_class=HTMLResponse)
     def cash_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
         days = days if days in (30, 60, 90) else 30
@@ -866,6 +970,56 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                 "interest_in_window_paise": sim.interest_in_window_paise,
                 "flows": [{"date": str(d), "amount_paise": a} for d, a in sim.flows],
                 "before": forecast_json(sim.before), "after": forecast_json(sim.after), "saved": False}
+
+    def txn_json(t, suggestions=None) -> dict:
+        out = {"id": t.id, "import_id": t.import_id, "account_id": t.account_id, "txn_date": str(t.txn_date),
+               "description": t.description, "reference": t.reference, "amount_paise": t.amount_paise,
+               "balance_paise": t.balance_paise, "status": t.status, "ledger_entry_id": t.ledger_entry_id,
+               "note": t.note}
+        if suggestions is not None:
+            out["suggestions"] = [{"kind": x.kind, "loan_id": x.loan_id, "entry_id": x.entry_id, "score": x.score,
+                                   "strong": x.strong, "reason": x.reason} for x in suggestions]
+        return out
+
+    @app.get("/api/bank/imports")
+    def api_bank_imports(_: str = Depends(user), s: Session = Depends(db)):
+        return [{"id": i.id, "account_id": i.account_id, "account": i.account.name, "file_name": i.file_name,
+                 "row_count": i.row_count, "new_count": i.new_count, "period_start": str(i.period_start),
+                 "period_end": str(i.period_end)} for i in svc.bank_imports(s)]
+
+    @app.get("/api/bank/imports/{import_id}")
+    def api_bank_import(import_id: int, _: str = Depends(user), s: Session = Depends(db)):
+        txns = svc.bank_txns(s, import_id)
+        sugg = svc.txn_suggestions(s, today(), txns)
+        return [txn_json(t, sugg.get(t.id)) for t in txns]
+
+    @app.post("/api/bank/txns/{txn_id}/link")
+    def api_bank_link(request: Request, txn_id: int, payload: BankLinkIn, _: str = Depends(user),
+                      s: Session = Depends(db)):
+        t = svc.link_bank_txn(s, txn_id, payload.entry_id)
+        log(request, s, "BANK_LINKED", "bank_txn", t.id, entry=payload.entry_id, via="api")
+        return txn_json(t)
+
+    @app.post("/api/bank/txns/{txn_id}/record", status_code=201)
+    def api_bank_record(request: Request, txn_id: int, payload: BankRecordIn, _: str = Depends(user),
+                        s: Session = Depends(db)):
+        t, e = svc.record_bank_txn(s, txn_id, payload.loan_id, today())
+        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=payload.loan_id, type=e.type,
+            amount_paise=e.amount_paise, entry_date=e.entry_date, via="api bank import")
+        return txn_json(t) | {"entry_id": e.id}
+
+    @app.post("/api/bank/txns/{txn_id}/ignore")
+    def api_bank_ignore(request: Request, txn_id: int, payload: ReverseIn, _: str = Depends(user),
+                        s: Session = Depends(db)):
+        t = svc.ignore_bank_txn(s, txn_id, payload.note)
+        log(request, s, "BANK_IGNORED", "bank_txn", t.id, note=t.note, via="api")
+        return txn_json(t)
+
+    @app.post("/api/bank/txns/{txn_id}/undo")
+    def api_bank_undo(request: Request, txn_id: int, _: str = Depends(user), s: Session = Depends(db)):
+        t = svc.undo_bank_txn(s, txn_id)
+        log(request, s, "BANK_UNDONE", "bank_txn", t.id, via="api")
+        return txn_json(t)
 
     @app.get("/api/receipts")
     def api_receipts(loan_id: int | None = None, q: str = "", _: str = Depends(user), s: Session = Depends(db)):

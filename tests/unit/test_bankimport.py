@@ -101,6 +101,7 @@ def test_existing_entry_is_the_best_match():
     [best, *rest] = suggest(D(2026, 2, 5), 150_000, "UPI-RAVI KUMAR", LOANS, entries)
     assert (best.kind, best.entry_id, best.loan_id) == ("EXISTING", 41, 5)
     assert "already recorded" in best.reason
+    assert rest == []          # no "record payment" next to it: that would count the money twice
 
 
 def test_name_and_amount_suggest_a_payment():
@@ -130,3 +131,19 @@ def test_already_linked_and_far_entries_are_skipped():
     entries = [EntryInfo(41, 5, "GIVEN", "PAYMENT", D(2026, 2, 4), 150_000, linked=True),
                EntryInfo(42, 5, "GIVEN", "PAYMENT", D(2026, 1, 20), 150_000)]
     assert all(s.kind != "EXISTING" for s in suggest(D(2026, 2, 5), 150_000, "RAVI", LOANS, entries))
+
+
+def test_space_before_quoted_amount():
+    rows = parse_statement(b'Date,Narration,Debit,Credit,Balance\n12/11/2026,ATM, "2,000.00", ,"56,000.00"\n')
+    assert (rows[0].amount_paise, rows[0].balance_paise) == (-200_000, 5_600_000)
+
+
+def test_extra_columns_are_refused_not_guessed():
+    # an unquoted amount with a comma splits into two cells: refuse instead of reading Rs 2
+    with pytest.raises(StatementError, match="line 2 has 5 columns but the headings have 4"):
+        parse_statement(b"Date,Narration,Debit,Credit\n12/11/2026,ATM,2,000.00,9\n")
+
+
+def test_trailing_empty_columns_are_fine():
+    rows = parse_statement(b"Date,Narration,Debit,Credit,,\n12/11/2026,ATM,500,,,,\n")
+    assert rows[0].amount_paise == -50_000

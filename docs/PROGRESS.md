@@ -87,7 +87,14 @@
   mode shows cash forecast before/after. JSON /api/simulate/*. render() no longer
   overwrites a page's own error. 211 tests.
 
+- Phase 13 (bank import): bankimport.py (pure) parses common Indian bank CSVs
+  (skipinitialspace; refuses rows wider than the headings rather than guess),
+  fingerprints for duplicate skip, suggestions with reasons (an already-recorded
+  match hides new-payment offers). Migration 0006 bank_import (append-only),
+  bank_txn (bank figures locked). Link/record/ignore/undo, link-all-exact, balance
+  from statement. /bank pages, /api/bank/*. All /api POSTs must be JSON (CSRF). 241 tests.
+
 ## Next step
-V2 plan (phases 8-12) complete. Deferred ideas: bank statement import, encrypted
-document storage, application/approval workflow, official WhatsApp API.
+Deferred ideas: encrypted document storage, application/approval workflow,
+official WhatsApp API.
 

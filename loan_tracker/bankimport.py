@@ -62,7 +62,7 @@ def parse_date(raw: str) -> date | None:
 
 def parse_money(raw: str) -> int | None:
     """'1,500.00' -> 150000; '' or '-' -> None; '(10.00)' -> -1000. Exact; no floats."""
-    s = (raw or "").strip().replace(",", "").replace("₹", "").replace("INR", "").replace("Rs.", "").strip()
+    s = (raw or "").strip().strip('"').replace(",", "").replace("₹", "").replace("INR", "").replace("Rs.", "").strip()
     if s in ("", "-", "--", "NA", "N/A"):
         return None
     neg = s.startswith("(") and s.endswith(")")
@@ -113,6 +113,14 @@ def _columns(header: list[str]) -> dict | None:
     return None
 
 
+def _trim(row: list[str]) -> list[str]:
+    """Row without trailing empty cells (many banks pad rows with empty columns)."""
+    end = len(row)
+    while end and not row[end - 1].strip():
+        end -= 1
+    return row[:end]
+
+
 def _decode(data: bytes) -> str:
     for enc in ("utf-8-sig", "cp1252", "latin-1"):
         try:
@@ -130,7 +138,7 @@ def parse_statement(data: bytes) -> list[StatementRow]:
     text = _decode(data)
     first = text[:4096]
     delim = max((",", ";", "\t", "|"), key=lambda d: first.count(d))
-    rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    rows = list(csv.reader(io.StringIO(text), delimiter=delim, skipinitialspace=True))
     header_at, col = None, None
     for i, row in enumerate(rows[:60]):
         col = _columns(row)
@@ -140,12 +148,16 @@ def parse_statement(data: bytes) -> list[StatementRow]:
     if header_at is None:
         raise StatementError("could not find the column headings (date, narration, withdrawal/deposit or "
                              "amount). Export the statement as CSV from your bank and try again.")
+    width = len(_trim(rows[header_at]))
     out: list[StatementRow] = []
     for n, row in enumerate(rows[header_at + 1:], start=header_at + 2):
         cell = lambda k: row[col[k]].strip() if col[k] is not None and col[k] < len(row) else ""  # noqa: E731
         when = parse_date(cell("date"))
         if when is None:
             continue                                             # footer, blank or opening-balance line
+        if len(_trim(row)) > width:                              # a comma inside an amount split it: never guess
+            raise StatementError(f"line {n} has {len(_trim(row))} columns but the headings have {width}; "
+                                 "the file looks damaged. Export it again from your bank.")
         try:
             if col["debit"] is not None and col["credit"] is not None:
                 dr, cr = parse_money(cell("debit")) or 0, parse_money(cell("credit")) or 0
@@ -252,6 +264,9 @@ def suggest(txn_date: date, amount_paise: int, description: str, loans: Sequence
             out.append(Suggestion("EXISTING", e.loan_id, e.entry_id, 100, True,
                                   f"already recorded: {what} of the same amount on {e.entry_date:%d %b %Y} "
                                   f"(LN-{e.loan_id}, entry #{e.entry_id})"))
+    if out:      # already in the ledger: only offer the link, never a second payment (double counting)
+        out.sort(key=lambda s: (abs((s.entry_id or 0)), s.loan_id))
+        return out[:limit]
     for ln in loans:
         if ln.direction != pay_dir:
             continue

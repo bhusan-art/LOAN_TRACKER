@@ -76,3 +76,16 @@ form.inline input{border:1px solid var(--line);background:var(--surface2);border
 @media(max-width:1100px){.formgrid.four{grid-template-columns:1fr 1fr}}
 @media(max-width:800px){.formgrid.four{grid-template-columns:1fr}}
 @media(max-width:800px){.simtable th,.simtable td{padding:11px 6px;font-size:11px}.simtable td:first-child{white-space:normal}}
+
+/* Phase 13: bank import */
+.bankline{padding:16px 0;border-bottom:1px solid var(--line)}.bankline:last-child{border:0}
+.bl-head{display:flex;gap:13px;align-items:center}.bl-head .bubble{width:37px;height:37px;flex-shrink:0;border-radius:11px;display:grid;place-items:center;background:var(--brandlight);color:var(--brand)}
+.bl-head .bubble.green{background:var(--greenlight);color:var(--green)}.bl-head .bubble.red{background:var(--redlight);color:var(--red)}
+.bl-head .bubble svg{width:17px;height:17px}.bl-text{min-width:0;flex:1}.bl-text strong{display:block;font-size:12px;overflow-wrap:anywhere}
+.bl-text small{display:block;color:var(--muted);font-size:11px;margin-top:5px}.bl-head .right{text-align:right;margin-left:auto}
+.bl-actions{margin:10px 0 0 50px;display:grid;gap:8px}.bl-actions.decided{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--muted)}
+form.sugg{display:flex;gap:12px;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px}
+form.sugg.strong{border-color:var(--brand);background:var(--brandlight)}form.sugg span{min-width:0}
+form.inline select{border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:8px 10px;color:var(--text);min-width:0;flex:1 1 160px}
+label.check{display:flex;gap:8px;align-items:center;font-weight:700}
+@media(max-width:800px){.bl-actions{margin-left:0}form.sugg{flex-direction:column;align-items:stretch}}
