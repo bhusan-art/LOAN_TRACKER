@@ -314,3 +314,77 @@ class TestLoanRowLock:
         assert locked(self._sql(s, lambda: svc.reverse_entry(s, holder["e"].id, entry_date=D(2026, 2, 2),
                                                              as_of=D(2026, 2, 2))))
         assert locked(self._sql(s, lambda: svc.set_owner_status(s, loan.id, "SETTLED", D(2026, 2, 2))))
+
+
+class TestReceipts:
+    """Example A loan: Rs 1 lakh at 2%/month from 1 Jan, due day 1."""
+
+    def test_payment_issues_numbered_receipt_with_split(self, s):
+        loan, p1, p2, _ = example_a(s)
+        r1, r2 = (s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == p.id)) for p in (p1, p2))
+        assert (r1.number, r2.number) == ("RCPT-2026-0001", "RCPT-2026-0002")
+        # p1 Rs 1,500 on 5 Feb: all interest (Rs 2,000 due 1 Feb), Rs 500 interest still owed
+        assert (r1.interest_paise, r1.principal_paise, r1.credit_paise) == (150_000, 0, 0)
+        assert (r1.principal_left_paise, r1.interest_left_paise) == (P, 50_000)
+        # p2 Rs 32,500 on 15 Mar: oldest interest first (500 + 2,000), the rest to principal
+        assert (r2.interest_paise, r2.principal_paise) == (250_000, 3_000_000)
+        assert r2.principal_left_paise == P - 3_000_000
+        assert r2.issued_on == D(2026, 4, 1) and r2.payment_date == D(2026, 3, 15)
+
+    def test_taken_loans_get_no_receipt(self, s):
+        loan = make_loan(s, direction="TAKEN")
+        e, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 2, 1), amount_paise=100,
+                              as_of=D(2026, 2, 1))
+        assert s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == e.id)) is None
+        with pytest.raises(svc.ServiceError, match="given loans"):
+            svc.issue_receipt(s, e.id, D(2026, 2, 1))
+
+    def test_reversal_cancels_receipt_and_number_is_not_reused(self, s):
+        loan, p1, _, _ = example_a(s)
+        svc.reverse_entry(s, p1.id, entry_date=D(2026, 4, 2), as_of=D(2026, 4, 2), note="wrong loan")
+        r1 = s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == p1.id))
+        assert r1.cancelled_at is not None and r1.cancel_reason == "payment reversed on 02 Apr 2026: wrong loan"
+        e, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 4, 2), amount_paise=100,
+                              as_of=D(2026, 4, 2))
+        assert s.scalar(select(m.Receipt.number).where(m.Receipt.ledger_entry_id == e.id)) == "RCPT-2026-0003"
+        with pytest.raises(svc.ServiceError, match="reversed"):
+            svc.issue_receipt(s, p1.id, D(2026, 4, 2))
+
+    def test_overpayment_shows_as_credit(self, s):
+        loan = make_loan(s)
+        e, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 1, 1), amount_paise=P + 500,
+                              as_of=D(2026, 1, 1))
+        r = s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == e.id))
+        assert (r.principal_paise, r.credit_paise, r.principal_left_paise) == (P, 500, 0)
+
+    def test_numbering_restarts_each_year(self, s):
+        loan = make_loan(s, start=D(2025, 12, 1), as_of=D(2025, 12, 1))
+        e1, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2025, 12, 20), amount_paise=100,
+                               as_of=D(2025, 12, 20))
+        e2, _ = svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 1, 2), amount_paise=100,
+                               as_of=D(2026, 1, 2))
+        nums = [s.scalar(select(m.Receipt.number).where(m.Receipt.ledger_entry_id == e.id)) for e in (e1, e2)]
+        assert nums == ["RCPT-2025-0001", "RCPT-2026-0001"]
+
+    def test_backfill_older_payments_in_payment_order(self, s):
+        loan = make_loan(s)
+        # simulate payments recorded before Phase 10: insert ledger rows directly, no receipts
+        for d, amt in ((D(2026, 3, 1), 200), (D(2026, 2, 1), 100)):
+            s.add(m.LedgerEntry(loan_id=loan.id, entry_date=d, type="PAYMENT", amount_paise=amt))
+        s.flush()
+        assert len(svc.payments_without_receipt(s)) == 2
+        made = svc.issue_missing_receipts(s, D(2026, 4, 1))
+        assert [(r.payment_date, r.number) for r in made] == [(D(2026, 2, 1), "RCPT-2026-0001"),
+                                                              (D(2026, 3, 1), "RCPT-2026-0002")]
+        assert svc.payments_without_receipt(s) == []
+        with pytest.raises(svc.ServiceError, match="already has receipt RCPT-2026-0001"):
+            svc.issue_receipt(s, made[0].ledger_entry_id, D(2026, 4, 1))
+
+    def test_receipt_rows_are_protected(self, s):
+        _, p1, _, _ = example_a(s)
+        rid = s.scalar(select(m.Receipt.id).where(m.Receipt.ledger_entry_id == p1.id))
+        for sql, msg in (("UPDATE receipt SET amount_paise = 1 WHERE id = :i", "only be cancelled"),
+                         ("DELETE FROM receipt WHERE id = :i", "cannot be deleted")):
+            with pytest.raises(DBAPIError, match=msg):
+                with s.begin_nested():
+                    s.execute(text(sql), {"i": rid})

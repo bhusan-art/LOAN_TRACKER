@@ -226,6 +226,8 @@ def post_entry(
     s.flush()
     s.expire(loan, ["entries"])
     result = recompute_loan(s, loan, as_of)
+    if type == "PAYMENT" and loan.direction == "GIVEN":
+        issue_receipt(s, e.id, as_of)
     return e, result
 
 
@@ -248,6 +250,9 @@ def reverse_entry(s: Session, entry_id: int, *, entry_date: date, as_of: date,
     s.add(m.LedgerEntry(loan_id=original.loan_id, entry_date=entry_date, type="REVERSAL",
                         reverses_id=entry_id, note=note or f"reverses entry {entry_id}"))
     s.flush()
+    rcpt = s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == entry_id))
+    if rcpt is not None and rcpt.cancelled_at is None:
+        _cancel_receipt(rcpt, f"payment reversed on {entry_date:%d %b %Y}" + (f": {note}" if note else ""))
     loan = get_loan(s, original.loan_id)
     s.expire(loan, ["entries"])
     return recompute_loan(s, loan, as_of)
@@ -347,6 +352,96 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
     if party_id:
         q = q.where(m.Loan.party_id == party_id)
     return [LoanRow(loan, compute_loan(loan, as_of)) for loan in s.scalars(q.order_by(m.Loan.id)).all()]
+
+
+# ---------------------------------------------------------------------------
+# receipts (Phase 10): documents for money received on GIVEN loans
+# ---------------------------------------------------------------------------
+def _next_receipt_seq(s: Session, year: int) -> int:
+    """Atomic: locks the year's counter row until commit, so numbers are unique
+    and a rolled-back payment gives its number back (no gaps)."""
+    from sqlalchemy import text as sql
+    return s.execute(sql(
+        "INSERT INTO receipt_counter (year, last_seq) VALUES (:y, 1) "
+        "ON CONFLICT (year) DO UPDATE SET last_seq = receipt_counter.last_seq + 1 RETURNING last_seq"),
+        {"y": year}).scalar_one()
+
+
+def issue_receipt(s: Session, entry_id: int, issued_on: date) -> m.Receipt:
+    """Receipt for one live PAYMENT on a loan you GAVE. Snapshot of the split
+    and the balance left as at the payment date. Issued automatically for new
+    payments; call it directly for payments recorded before receipts existed."""
+    from loan_tracker.receipts import receipt_number
+    e = s.get(m.LedgerEntry, entry_id)
+    if e is None:
+        raise ServiceError(f"entry {entry_id} not found")
+    if e.type != "PAYMENT":
+        raise ServiceError("receipts are only for payments")
+    if s.scalar(select(m.LedgerEntry.id).where(m.LedgerEntry.reverses_id == entry_id)):
+        raise ServiceError("this payment was reversed; no receipt")
+    existing = s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == entry_id))
+    if existing is not None:
+        raise ServiceError(f"this payment already has receipt {existing.number}")
+    loan = get_loan(s, e.loan_id)
+    if loan.direction != "GIVEN":
+        raise ServiceError("receipts are for money you received (given loans)")
+    res = compute_loan(loan, e.entry_date)
+    split = {"PENALTY": 0, "INTEREST": 0, "PRINCIPAL": 0}
+    for a in res.allocations:
+        if a.entry_id == e.id:
+            split[a.bucket] += a.amount_paise
+    seq = _next_receipt_seq(s, issued_on.year)
+    r = m.Receipt(number=receipt_number(issued_on.year, seq), year=issued_on.year, seq=seq,
+                  ledger_entry_id=e.id, loan_id=loan.id, issued_on=issued_on, payment_date=e.entry_date,
+                  amount_paise=e.amount_paise, penalty_paise=split["PENALTY"],
+                  interest_paise=split["INTEREST"], principal_paise=split["PRINCIPAL"],
+                  credit_paise=e.amount_paise - sum(split.values()),
+                  principal_left_paise=res.balances.principal_outstanding_paise,
+                  interest_left_paise=res.balances.interest_outstanding_paise,
+                  payment_mode=e.payment_mode, reference=e.reference)
+    s.add(r)
+    s.flush()
+    return r
+
+
+def _cancel_receipt(r: m.Receipt, reason: str) -> None:
+    from datetime import datetime, timezone
+    r.cancelled_at = datetime.now(timezone.utc)
+    r.cancel_reason = reason
+
+
+def payments_without_receipt(s: Session, loan_id: int | None = None) -> list[m.LedgerEntry]:
+    """Live PAYMENT entries on GIVEN loans that have no receipt (recorded before Phase 10)."""
+    reversed_ids = select(m.LedgerEntry.reverses_id).where(m.LedgerEntry.reverses_id.is_not(None))
+    q = (select(m.LedgerEntry).join(m.Loan, m.Loan.id == m.LedgerEntry.loan_id)
+         .outerjoin(m.Receipt, m.Receipt.ledger_entry_id == m.LedgerEntry.id)
+         .where(m.LedgerEntry.type == "PAYMENT", m.Loan.direction == "GIVEN", m.Receipt.id.is_(None),
+                m.LedgerEntry.id.not_in(reversed_ids)))
+    if loan_id is not None:
+        q = q.where(m.LedgerEntry.loan_id == loan_id)
+    return list(s.scalars(q.order_by(m.LedgerEntry.entry_date, m.LedgerEntry.id)))
+
+
+def issue_missing_receipts(s: Session, issued_on: date, loan_id: int | None = None) -> list[m.Receipt]:
+    """Receipts for older payments, oldest payment first, so numbers follow payment order."""
+    return [issue_receipt(s, e.id, issued_on) for e in payments_without_receipt(s, loan_id)]
+
+
+def receipts(s: Session, loan_id: int | None = None, q: str = "", limit: int = 500) -> list[m.Receipt]:
+    query = select(m.Receipt)
+    if loan_id is not None:
+        query = query.where(m.Receipt.loan_id == loan_id)
+    if q.strip():
+        query = query.join(m.Loan).join(m.Party).where(
+            or_(m.Receipt.number.ilike(f"%{q.strip()}%"), m.Party.name.ilike(f"%{q.strip()}%")))
+    return list(s.scalars(query.order_by(m.Receipt.year.desc(), m.Receipt.seq.desc()).limit(limit)))
+
+
+def get_receipt(s: Session, receipt_id: int) -> m.Receipt:
+    r = s.get(m.Receipt, receipt_id)
+    if r is None:
+        raise ServiceError(f"receipt {receipt_id} not found")
+    return r
 
 
 # ---------------------------------------------------------------------------

@@ -191,3 +191,29 @@ class PaymentPromise(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class Receipt(Base):
+    """Snapshot document. Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "receipt"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    number: Mapped[str] = mapped_column(Text)
+    year: Mapped[int] = mapped_column(Integer)
+    seq: Mapped[int] = mapped_column(Integer)
+    ledger_entry_id: Mapped[int] = mapped_column(ID, ForeignKey("ledger_entry.id"))
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    issued_on: Mapped[date] = mapped_column(Date)
+    payment_date: Mapped[date] = mapped_column(Date)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    penalty_paise: Mapped[int] = mapped_column(ID, default=0)
+    interest_paise: Mapped[int] = mapped_column(ID, default=0)
+    principal_paise: Mapped[int] = mapped_column(ID, default=0)
+    credit_paise: Mapped[int] = mapped_column(ID, default=0)
+    principal_left_paise: Mapped[int] = mapped_column(ID)
+    interest_left_paise: Mapped[int] = mapped_column(ID)
+    payment_mode: Mapped[str | None] = mapped_column(Text)
+    reference: Mapped[str | None] = mapped_column(Text)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    loan: Mapped["Loan"] = relationship(lazy="joined")
