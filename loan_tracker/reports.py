@@ -533,7 +533,7 @@ class CashForecast:
 
 
 def cash_forecast(s: Session, as_of: date, days: int = 30, book: str | None = None,
-                  buffer_paise: int = 0) -> CashForecast:
+                  buffer_paise: int = 0, extra: list[tuple[date, int, str, str]] | None = None) -> CashForecast:
     """Opening balance (latest balance of each active account) + interest and
     principal due in/out (engine) + planned items, day by day."""
     from loan_tracker.cashflow import Flow, forecast
@@ -546,12 +546,18 @@ def cash_forecast(s: Session, as_of: date, days: int = 30, book: str | None = No
         item = TodayItem(0, p.description, p.book, "GIVEN" if p.direction == "IN" else "TAKEN",
                          p.item_date, p.amount_paise, "PLANNED", count=p.id)
         (day.money_in if p.direction == "IN" else day.money_out).append(item)
+    for d, amt, label, bk in extra or []:       # what-if flows (simulator): (date, +in/-out, label, book)
+        if as_of <= d <= horizon and (book is None or bk == book):
+            day = cal.setdefault(d, CalendarDay(d))
+            item = TodayItem(0, label, bk, "GIVEN" if amt > 0 else "TAKEN", d, abs(amt), "SIMULATED")
+            (day.money_in if amt > 0 else day.money_out).append(item)
     days_sorted = [cal[d] for d in sorted(cal)]
     # borrowers already late: their money is not counted in the cautious view
     late = {i.loan_id for d in days_sorted for i in d.money_in if i.status == "OVERDUE"}
     flows = []
     for d in days_sorted:
-        flows += [Flow(d.day, i.amount_paise, risky=i.loan_id in late and i.status != "PLANNED") for i in d.money_in]
+        flows += [Flow(d.day, i.amount_paise, risky=i.loan_id in late and i.status not in ("PLANNED", "SIMULATED"))
+                  for i in d.money_in]
         flows += [Flow(d.day, -i.amount_paise) for i in d.money_out]
 
     accounts = latest_balances(s, book)
@@ -586,3 +592,126 @@ def cash_warnings(f: CashForecast) -> list[str]:
         out.append(f"Cash balances were last updated {f.stale_days} days ago; update them so the "
                    f"forecast is right.")
     return out
+
+
+
+# ---------------------------------------------------------------------------
+# what-if simulator (Phase 12): engine on copies, nothing saved
+# ---------------------------------------------------------------------------
+@dataclass
+class LinkEffect:
+    link: object
+    other: object                  # the other loan of the link
+    exposure_actual: int
+    exposure_sim: int
+    spread_actual: int             # paise per month at the horizon
+    spread_sim: int
+
+
+@dataclass
+class LoanSimulation:
+    loan: object
+    today: date
+    horizon: date
+    scenario: object
+    actual: object                 # simulator.Projection
+    simulated: object
+    links: list[LinkEffect] = field(default_factory=list)
+
+
+def _rate_on(terms: eng.LoanTerms, entries, d: date):
+    from loan_tracker.engine.accrual import live_entries
+    rate = terms.rate
+    for e in sorted(live_entries(entries), key=lambda e: e.entry_date):
+        if e.type == "RATE_CHANGE" and e.entry_date <= d and e.new_rate is not None:
+            rate = e.new_rate
+    return rate
+
+
+def simulate_loan(s: Session, loan_id: int, today: date, horizon: date, scenario) -> LoanSimulation:
+    from dataclasses import replace
+    from decimal import Decimal
+    from loan_tracker import simulator as sim
+    from loan_tracker.engine.funding import monthly_rate
+    from loan_tracker.services import ServiceError, get_loan, to_entries
+    loan = get_loan(s, loan_id)
+    if loan.status in ("SETTLED", "WRITTEN_OFF"):
+        raise ServiceError(f"loan is {loan.status.lower().replace('_', ' ')}; nothing to simulate")
+    terms, entries = to_terms(loan), to_entries(loan.entries)
+    if compute_loan(loan, today).balances.principal_outstanding_paise == 0 and scenario.kind != "TOPUP":
+        raise ServiceError("this loan is fully repaid; only a top-up can be simulated")
+    try:
+        actual = sim.project(terms, entries, today, horizon, sim.Scenario("NONE"))
+        simulated = sim.project(terms, entries, today, horizon, scenario)
+    except ValueError as exc:
+        raise ServiceError(str(exc)) from exc
+    out = LoanSimulation(loan, today, horizon, scenario, actual, simulated)
+    for l in funding_links(s):
+        if loan.id not in (l.given_loan_id, l.taken_loan_id):
+            continue
+        other = get_loan(s, l.taken_loan_id if l.given_loan_id == loan.id else l.given_loan_id)
+        o_terms = to_terms(other)
+        o_left = compute_loan(other, today).balances.principal_outstanding_paise
+        o_rate = _rate_on(o_terms, to_entries(other.entries), horizon)
+        link = _eng_link(l)
+        effects = []
+        for p in (actual, simulated):
+            mine = replace(terms, rate=p.effective_rate)
+            theirs = replace(o_terms, rate=o_rate)
+            both = {loan.id: mine, other.id: theirs}
+            exp = eng.link_exposure(link, both, {loan.id: p.principal_left_paise, other.id: o_left})
+            g, t = (mine, theirs) if loan.direction == "GIVEN" else (theirs, mine)
+            spread = round_half_up_paise(Decimal(exp) * (monthly_rate(g) - monthly_rate(t)) / 100)
+            effects += [exp, spread]
+        out.links.append(LinkEffect(l, other, effects[0], effects[2], effects[1], effects[3]))
+    return out
+
+
+def round_half_up_paise(v) -> int:
+    from loan_tracker.engine.money import round_half_up
+    return round_half_up(v)
+
+
+@dataclass
+class NewLoanSimulation:
+    terms: object
+    flows: list                    # (date, +in/-out)
+    monthly_interest_paise: int    # for a full month at the start rate
+    interest_in_window_paise: int
+    before: object                 # CashForecast without the loan
+    after: object                  # CashForecast with it
+
+
+def simulate_new_loan(s: Session, today: date, days: int, *, direction: str, book: str, principal_paise: int,
+                      rate, start_date: date, due_day: int, rate_unit: str = "PER_MONTH",
+                      interest_cycle: str = "MONTHLY", maturity_date: date | None = None,
+                      buffer_paise: int = 0) -> NewLoanSimulation:
+    from decimal import Decimal
+    from loan_tracker import simulator as sim
+    from loan_tracker.services import ServiceError
+    horizon = today + timedelta(days=days)
+    if principal_paise <= 0:
+        raise ServiceError("amount must be more than zero")
+    if not today <= start_date <= horizon:
+        raise ServiceError("the start date must be within the forecast window")
+    if maturity_date is not None and maturity_date <= start_date:
+        raise ServiceError("maturity must be after the start date")
+    terms = eng.LoanTerms(loan_id=-1, direction=direction, book=book, principal_paise=principal_paise,
+                          start_date=start_date, rate=Decimal(rate), rate_unit=rate_unit, interest_type="SIMPLE",
+                          interest_cycle=interest_cycle, due_day=due_day, grace_days=3, penalty_rule=None,
+                          maturity_date=maturity_date)
+    from loan_tracker.engine.funding import monthly_rate
+    flows = sim.new_loan_flows(terms, today, horizon)
+    label = "New loan you give" if direction == "GIVEN" else "New loan you take"
+
+    def what(d: date) -> str:
+        if d == start_date:
+            return "principal"
+        return "interest + principal" if d == maturity_date else "interest"
+    extra = [(d, amt, f"{label} ({what(d)})", book) for d, amt in flows]
+    before = cash_forecast(s, today, days, None, buffer_paise)
+    after = cash_forecast(s, today, days, None, buffer_paise, extra=extra)
+    disb = eng.LedgerEntry(-1, start_date, "DISBURSE", principal_paise, None, "what-if", None)
+    interest = sim.project(terms, [disb], start_date, horizon, sim.Scenario("NONE")).interest_paise
+    monthly = round_half_up_paise(Decimal(principal_paise) * monthly_rate(terms) / 100)
+    return NewLoanSimulation(terms, flows, monthly, interest, before, after)

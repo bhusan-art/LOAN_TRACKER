@@ -510,3 +510,64 @@ def test_rupees_to_paise_rejects_non_amounts(bad):
 
 def test_rupees_to_paise_negative_for_overdraft():
     assert svc.rupees_to_paise("-5,000.50") == -500_050
+
+
+class TestSimulator:
+    """Suresh lends you Rs 1 lakh at 1.5%; all of it funds Ravi's Rs 1 lakh at 2.5% (Rs 1,000/month spread)."""
+
+    def _setup(self, s):
+        suresh, ravi = _suresh_ravi(s)
+        svc.link_funding(s, taken_loan_id=suresh.id, given_loan_id=ravi.id, amount_paise=P,
+                         link_date=D(2026, 1, 1))
+        return suresh, ravi
+
+    def test_early_payoff_frees_the_borrowed_money(self, s):
+        from loan_tracker.simulator import Scenario
+        _, ravi = self._setup(s)
+        sim = reports.simulate_loan(s, ravi.id, D(2026, 1, 1), D(2026, 7, 1), Scenario("PAYOFF", D(2026, 3, 10)))
+        assert sim.actual.principal_left_paise == P and sim.simulated.principal_left_paise == 0
+        assert sim.simulated.interest_paise < sim.actual.interest_paise
+        [eff] = sim.links
+        assert (eff.exposure_actual, eff.spread_actual) == (P, 100_000)
+        assert (eff.exposure_sim, eff.spread_sim) == (0, 0)       # Suresh's money now idle, earning nothing
+        assert eff.other.party.name == "Suresh"
+
+    def test_rate_cut_turns_spread_negative(self, s):
+        from decimal import Decimal
+        from loan_tracker.simulator import Scenario
+        _, ravi = self._setup(s)
+        sim = reports.simulate_loan(s, ravi.id, D(2026, 1, 1), D(2026, 7, 1),
+                                    Scenario("RATE_CHANGE", D(2026, 4, 10), new_rate=Decimal("1")))
+        assert sim.links[0].spread_sim == -50_000
+
+    def test_simulation_saves_nothing(self, s):
+        from loan_tracker.simulator import Scenario
+        _, ravi = self._setup(s)
+        from sqlalchemy import func
+        count = lambda: s.scalar(select(func.count()).select_from(m.LedgerEntry))
+        before = count()
+        reports.simulate_loan(s, ravi.id, D(2026, 1, 1), D(2026, 7, 1),
+                              Scenario("EXTRA_PAYMENT", D(2026, 2, 1), amount_paise=100))
+        assert count() == before
+
+    def test_bad_scenario_is_a_friendly_error(self, s):
+        from loan_tracker.simulator import Scenario
+        _, ravi = self._setup(s)
+        with pytest.raises(svc.ServiceError, match="between"):
+            reports.simulate_loan(s, ravi.id, D(2026, 1, 1), D(2026, 7, 1),
+                                  Scenario("TOPUP", D(2027, 1, 1), amount_paise=5))
+
+    def test_new_loan_changes_the_cash_forecast(self, s):
+        from decimal import Decimal
+        self._setup(s)
+        svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=200_000,
+                                as_of=D(2026, 1, 1))       # covers Suresh's 5 Feb interest before Ravi pays
+        sim = reports.simulate_new_loan(s, D(2026, 1, 1), 60, direction="GIVEN", book="BUSINESS",
+                                        principal_paise=P, rate=Decimal("2"), start_date=D(2026, 1, 15),
+                                        due_day=1)
+        assert sim.monthly_interest_paise == 200_000
+        assert sim.interest_in_window_paise == 109_677 + 200_000    # 1 Feb (17 days) and 1 Mar
+        assert sim.before.expected.short_date is None
+        assert sim.after.expected.short_date == D(2026, 1, 15)     # you would need the Rs 1 lakh first
+        labels = [i.party for d in sim.after.calendar for i in d.money_out if i.status == "SIMULATED"]
+        assert labels == ["New loan you give (principal)"]
