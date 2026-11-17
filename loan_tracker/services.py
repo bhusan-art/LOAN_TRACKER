@@ -355,6 +355,115 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# cash and liquidity (Phase 11): accounts, balance history, planned items.
+# Not loan money: nothing here touches the ledger.
+# ---------------------------------------------------------------------------
+CASH_KINDS = ("BANK", "CASH", "WALLET")
+
+
+def create_cash_account(s: Session, *, name: str, kind: str, book: str, balance_paise: int,
+                        as_of: date) -> m.CashAccount:
+    name = (name or "").strip()
+    if not name:
+        raise ServiceError("account name is required")
+    if kind not in CASH_KINDS:
+        raise ServiceError("account type must be BANK, CASH or WALLET")
+    if book not in ("BUSINESS", "PERSONAL"):
+        raise ServiceError("book must be BUSINESS or PERSONAL")
+    if s.scalar(select(m.CashAccount.id).where(m.CashAccount.name.ilike(name))):
+        raise ServiceError(f"an account called '{name}' already exists")
+    acc = m.CashAccount(name=name, kind=kind, book=book)
+    s.add(acc)
+    s.flush()
+    s.add(m.CashBalance(account_id=acc.id, as_of=as_of, balance_paise=balance_paise, note="opening balance"))
+    s.flush()
+    return acc
+
+
+def set_cash_balance(s: Session, account_id: int, *, balance_paise: int, on: date, as_of: date,
+                     note: str | None = None) -> m.CashBalance:
+    """Record the balance you see in the bank/wallet on a date (a new history row)."""
+    acc = s.get(m.CashAccount, account_id)
+    if acc is None:
+        raise ServiceError(f"account {account_id} not found")
+    if on > as_of:
+        raise ServiceError("balance date is in the future")
+    b = m.CashBalance(account_id=acc.id, as_of=on, balance_paise=balance_paise, note=(note or "").strip() or None)
+    s.add(b)
+    s.flush()
+    return b
+
+
+def set_cash_account_active(s: Session, account_id: int, active: bool) -> m.CashAccount:
+    acc = s.get(m.CashAccount, account_id)
+    if acc is None:
+        raise ServiceError(f"account {account_id} not found")
+    acc.is_active = active
+    s.flush()
+    return acc
+
+
+def latest_balances(s: Session, book: str | None = None, include_inactive: bool = False
+                    ) -> list[tuple[m.CashAccount, m.CashBalance | None]]:
+    q = select(m.CashAccount).order_by(m.CashAccount.book, m.CashAccount.name)
+    if book:
+        q = q.where(m.CashAccount.book == book)
+    if not include_inactive:
+        q = q.where(m.CashAccount.is_active.is_(True))
+    out = []
+    for acc in s.scalars(q):
+        bal = s.scalars(select(m.CashBalance).where(m.CashBalance.account_id == acc.id)
+                        .order_by(m.CashBalance.as_of.desc(), m.CashBalance.id.desc()).limit(1)).first()
+        out.append((acc, bal))
+    return out
+
+
+def balance_history(s: Session, account_id: int, limit: int = 20) -> list[m.CashBalance]:
+    return list(s.scalars(select(m.CashBalance).where(m.CashBalance.account_id == account_id)
+                          .order_by(m.CashBalance.as_of.desc(), m.CashBalance.id.desc()).limit(limit)))
+
+
+def add_planned_item(s: Session, *, book: str, item_date: date, direction: str, amount_paise: int,
+                     description: str, as_of: date) -> m.PlannedCashItem:
+    description = (description or "").strip()
+    if not description:
+        raise ServiceError("say what the planned item is (e.g. rent, lending to Kiran)")
+    if direction not in ("IN", "OUT"):
+        raise ServiceError("direction must be IN or OUT")
+    if book not in ("BUSINESS", "PERSONAL"):
+        raise ServiceError("book must be BUSINESS or PERSONAL")
+    if amount_paise is None or amount_paise <= 0:
+        raise ServiceError("amount must be more than zero")
+    if item_date < as_of:
+        raise ServiceError("a planned item must be today or later")
+    it = m.PlannedCashItem(book=book, item_date=item_date, direction=direction, amount_paise=amount_paise,
+                           description=description)
+    s.add(it)
+    s.flush()
+    return it
+
+
+def cancel_planned_item(s: Session, item_id: int) -> m.PlannedCashItem:
+    from datetime import datetime, timezone
+    it = s.get(m.PlannedCashItem, item_id)
+    if it is None:
+        raise ServiceError(f"planned item {item_id} not found")
+    if it.cancelled_at is not None:
+        raise ServiceError("this planned item is already cancelled")
+    it.cancelled_at = datetime.now(timezone.utc)
+    s.flush()
+    return it
+
+
+def planned_items(s: Session, start: date, end: date, book: str | None = None) -> list[m.PlannedCashItem]:
+    q = select(m.PlannedCashItem).where(m.PlannedCashItem.cancelled_at.is_(None),
+                                        m.PlannedCashItem.item_date >= start, m.PlannedCashItem.item_date <= end)
+    if book:
+        q = q.where(m.PlannedCashItem.book == book)
+    return list(s.scalars(q.order_by(m.PlannedCashItem.item_date, m.PlannedCashItem.id)))
+
+
+# ---------------------------------------------------------------------------
 # receipts (Phase 10): documents for money received on GIVEN loans
 # ---------------------------------------------------------------------------
 def _next_receipt_seq(s: Session, year: int) -> int:

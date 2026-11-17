@@ -10,6 +10,18 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _rupees_env(name: str) -> int:
+    """'25,000' -> 2_500_000 paise; empty -> 0."""
+    raw = _env(name).replace(",", "").strip()
+    if not raw:
+        return 0
+    from decimal import Decimal, InvalidOperation
+    try:
+        return int(Decimal(raw) * 100)
+    except InvalidOperation:
+        raise ValueError(f"{name} must be an amount in rupees, e.g. 25000") from None
+
+
 def _database_url(url: str, password: str = "") -> str:
     """DATABASE_URL with DATABASE_PASSWORD put in safely: a password containing
     @ : / # % or spaces would otherwise break the URL (it is %-encoded here)."""
@@ -29,6 +41,8 @@ class Settings:
     secure_cookies: bool = field(default_factory=lambda: _env("SECURE_COOKIES", "0") == "1")
     reminder_days_before: int = field(default_factory=lambda: int(_env("REMINDER_DAYS_BEFORE", "3")))
     concentration_flag_pct: int = field(default_factory=lambda: int(_env("CONCENTRATION_FLAG_PCT", "25")))
+    # cash forecast (Phase 11): warn when the balance would fall below this (rupees)
+    cash_buffer_paise: int = field(default_factory=lambda: _rupees_env("CASH_MIN_BALANCE"))
     # receipts and closure certificates (Phase 10): who issues them
     receipt_name: str = field(default_factory=lambda: _env("RECEIPT_NAME"))
     receipt_business_name: str = field(default_factory=lambda: _env("RECEIPT_BUSINESS_NAME"))

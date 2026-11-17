@@ -217,3 +217,37 @@ class Receipt(Base):
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
     loan: Mapped["Loan"] = relationship(lazy="joined")
+
+
+class CashAccount(Base):
+    __tablename__ = "cash_account"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    book: Mapped[str] = mapped_column(BookEnum)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class CashBalance(Base):
+    """Append-only (DB trigger): each balance update is a new row."""
+    __tablename__ = "cash_balance"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    as_of: Mapped[date] = mapped_column(Date)
+    balance_paise: Mapped[int] = mapped_column(ID)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class PlannedCashItem(Base):
+    """Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "planned_cash_item"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    book: Mapped[str] = mapped_column(BookEnum)
+    item_date: Mapped[date] = mapped_column(Date)
+    direction: Mapped[str] = mapped_column(Text)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    description: Mapped[str] = mapped_column(Text)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")

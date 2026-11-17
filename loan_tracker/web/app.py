@@ -253,7 +253,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        dash = reports.dashboard(s, today(), BOOKS[book_of(request)],
+        dash = reports.dashboard(s, today(), BOOKS[book_of(request)], cash_buffer_paise=settings.cash_buffer_paise,
                                  concentration_flag_pct=settings.concentration_flag_pct)
         last = s.scalar(select(m.JobRun).order_by(m.JobRun.started_at.desc()).limit(1))
         return render(request, "home.html", d=dash, last_job=last)
@@ -588,7 +588,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     @app.get("/api/dashboard")
     def api_dashboard(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        return jsonable(reports.dashboard(s, today(), BOOKS[book_of(request)]))
+        return jsonable(reports.dashboard(s, today(), BOOKS[book_of(request)],
+                                          cash_buffer_paise=settings.cash_buffer_paise))
 
     @app.get("/api/parties")
     def api_parties(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):

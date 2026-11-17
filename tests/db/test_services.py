@@ -388,3 +388,115 @@ class TestReceipts:
             with pytest.raises(DBAPIError, match=msg):
                 with s.begin_nested():
                     s.execute(text(sql), {"i": rid})
+
+
+def _suresh_ravi(s):
+    """Suresh lends you Rs 1 lakh at 1.5% (due 5th); you lend Ravi Rs 1 lakh at 2.5% (due 10th)."""
+    suresh = make_loan(s, direction="TAKEN", book="BUSINESS", rate="1.5", due_day=5, name="Suresh")
+    ravi = make_loan(s, direction="GIVEN", book="BUSINESS", rate="2.5", due_day=10, name="Ravi")
+    return suresh, ravi
+
+
+class TestCashAccounts:
+    def test_accounts_and_balance_history(self, s):
+        a = svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=500_000,
+                                    as_of=D(2026, 3, 1))
+        svc.create_cash_account(s, name="Wallet", kind="CASH", book="PERSONAL", balance_paise=20_000,
+                                as_of=D(2026, 3, 1))
+        svc.set_cash_balance(s, a.id, balance_paise=-10_000, on=D(2026, 3, 5), as_of=D(2026, 3, 5), note="OD")
+        latest = {acc.name: b.balance_paise for acc, b in svc.latest_balances(s)}
+        assert latest == {"SBI": -10_000, "Wallet": 20_000}
+        assert [acc.name for acc, _ in svc.latest_balances(s, "PERSONAL")] == ["Wallet"]
+        assert [b.balance_paise for b in svc.balance_history(s, a.id)] == [-10_000, 500_000]
+        # a late-entered older reading does not replace a newer one
+        svc.set_cash_balance(s, a.id, balance_paise=1, on=D(2026, 3, 2), as_of=D(2026, 3, 6))
+        assert dict((acc.name, b.balance_paise) for acc, b in svc.latest_balances(s))["SBI"] == -10_000
+        svc.set_cash_account_active(s, a.id, False)
+        assert [acc.name for acc, _ in svc.latest_balances(s)] == ["Wallet"]
+
+    def test_validation_and_protection(self, s):
+        a = svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=0,
+                                    as_of=D(2026, 3, 1))
+        with pytest.raises(svc.ServiceError, match="already exists"):
+            svc.create_cash_account(s, name="sbi", kind="BANK", book="BUSINESS", balance_paise=0, as_of=D(2026, 3, 1))
+        with pytest.raises(svc.ServiceError, match="future"):
+            svc.set_cash_balance(s, a.id, balance_paise=1, on=D(2026, 3, 2), as_of=D(2026, 3, 1))
+        with pytest.raises(svc.ServiceError, match="today or later"):
+            svc.add_planned_item(s, book="BUSINESS", item_date=D(2026, 2, 28), direction="OUT",
+                                 amount_paise=1, description="rent", as_of=D(2026, 3, 1))
+        with pytest.raises(svc.ServiceError, match="say what"):
+            svc.add_planned_item(s, book="BUSINESS", item_date=D(2026, 3, 2), direction="OUT",
+                                 amount_paise=1, description=" ", as_of=D(2026, 3, 1))
+        it = svc.add_planned_item(s, book="BUSINESS", item_date=D(2026, 3, 2), direction="OUT",
+                                  amount_paise=1, description="rent", as_of=D(2026, 3, 1))
+        bid = svc.balance_history(s, a.id)[0].id
+        for sql, msg in (("UPDATE cash_balance SET balance_paise = 9 WHERE id = :b", "append-only"),
+                         ("DELETE FROM cash_balance WHERE id = :b", "append-only"),
+                         ("UPDATE planned_cash_item SET amount_paise = 9 WHERE id = :p", "only be cancelled"),
+                         ("DELETE FROM planned_cash_item WHERE id = :p", "cannot be deleted")):
+            with pytest.raises(DBAPIError, match=msg):
+                with s.begin_nested():
+                    s.execute(text(sql), {"b": bid, "p": it.id})
+        svc.cancel_planned_item(s, it.id)
+        with pytest.raises(svc.ServiceError, match="already cancelled"):
+            svc.cancel_planned_item(s, it.id)
+
+
+class TestCashForecast:
+    def test_shortfall_from_real_balance_and_planned_items(self, s):
+        _suresh_ravi(s)
+        t = D(2026, 1, 2)
+        acc = svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=10_000, as_of=t)
+        f = reports.cash_forecast(s, t, 30)
+        out_jan5 = sum(i.amount_paise for d in f.calendar if d.day == D(2026, 1, 5) for i in d.money_out)
+        assert out_jan5 == 19_355                                   # Suresh, 4 days of January
+        assert (f.opening_paise, f.expected.short_date, f.expected.short_paise) == (10_000, D(2026, 1, 5), 9_355)
+        assert reports.cash_warnings(f) == [
+            "Cash: you may be ₹93.55 short on 05 Jan 2026, even if everyone pays on time."]
+        # plan Rs 100 coming in on the 3rd: no shortfall any more
+        svc.add_planned_item(s, book="BUSINESS", item_date=D(2026, 1, 3), direction="IN", amount_paise=10_000,
+                             description="Sold old laptop", as_of=t)
+        f = reports.cash_forecast(s, t, 30)
+        assert f.expected.short_date is None and reports.cash_warnings(f) == []
+        planned = [i for d in f.calendar for i in d.money_in if i.status == "PLANNED"]
+        assert [(i.party, i.amount_paise) for i in planned] == [("Sold old laptop", 10_000)]
+        # a minimum balance turns it into a warning again
+        f = reports.cash_forecast(s, t, 30, buffer_paise=50_000)
+        # Rs 100 in hand is already under the Rs 500 minimum: short from today, worst dip on the 5th
+        assert (f.expected.short_date, f.expected.short_paise) == (D(2026, 1, 2), 50_000 - (20_000 - 19_355))
+        # running total on the calendar starts from the real balance
+        assert f.calendar[0].day == D(2026, 1, 3) and f.calendar[0].running_paise == 20_000
+        assert acc.id
+
+    def test_cautious_view_leaves_out_late_borrowers(self, s):
+        suresh, ravi = _suresh_ravi(s)
+        owed = svc.compute_loan(svc.get_loan(s, suresh.id), D(2026, 2, 6)).balances.interest_outstanding_paise
+        svc.post_entry(s, suresh.id, type="PAYMENT", entry_date=D(2026, 2, 6), amount_paise=owed,
+                       as_of=D(2026, 2, 6))                         # you are up to date with Suresh
+        t = D(2026, 2, 20)                                          # Ravi has paid nothing: late
+        svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=0, as_of=t)
+        f = reports.cash_forecast(s, t, 30)
+        assert f.expected.short_date is None                        # Ravi's arrears land today
+        assert (f.cautious.short_date, f.cautious.short_paise) == (D(2026, 3, 5), 150_000)
+        assert f.risky_in_paise > 0
+        assert reports.cash_warnings(f) == [
+            "Cash: if borrowers who are already late do not pay, you may be ₹1,500.00 short on 05 Mar 2026."]
+
+    def test_no_accounts_no_cash_warning_and_stale_warning(self, s):
+        _suresh_ravi(s)
+        assert reports.cash_warnings(reports.cash_forecast(s, D(2026, 1, 2), 30)) == []
+        svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=10**9,
+                                as_of=D(2026, 1, 1))
+        lines = reports.cash_warnings(reports.cash_forecast(s, D(2026, 1, 20), 30))
+        assert lines == ["Cash balances were last updated 19 days ago; update them so the forecast is right."]
+
+    def test_book_filter_and_dashboard(self, s):
+        _suresh_ravi(s)
+        t = D(2026, 1, 2)
+        svc.create_cash_account(s, name="Home", kind="CASH", book="PERSONAL", balance_paise=10**9, as_of=t)
+        f = reports.cash_forecast(s, t, 30, "BUSINESS")
+        assert f.has_accounts is False and f.opening_paise == 0
+        svc.create_cash_account(s, name="SBI", kind="BANK", book="BUSINESS", balance_paise=0, as_of=t)
+        db = reports.dashboard(s, t, "BUSINESS")
+        assert any(w.startswith("Cash: you may be ₹193.55 short on 05 Jan 2026") for w in db.warning_text)
+        assert not any(w.startswith("Cash:") for w in reports.dashboard(s, t).warning_text)  # Home cash covers it

@@ -85,7 +85,7 @@ class Dashboard:
 
 
 def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: int = 7,
-              concentration_flag_pct: int = 25) -> Dashboard:
+              concentration_flag_pct: int = 25, cash_buffer_paise: int = 0) -> Dashboard:
     rows = portfolio(s, as_of, book=book)
     db = Dashboard(as_of=as_of, book=book)
     given = [r for r in rows if r.loan.direction == "GIVEN"]
@@ -179,6 +179,7 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
     db.warning_text += [
         f"Negative spread: {names[sp.link.given_loan_id]}'s loan earns {_inr(-sp.spread_paise_per_cycle)} a month "
         f"less than borrowing from {names[sp.link.taken_loan_id]} costs." for sp in db.negative_spreads]
+    db.warning_text += cash_warnings(cash_forecast(s, as_of, 30, book, cash_buffer_paise))
     return db
 
 
@@ -510,3 +511,78 @@ def closure_summary(s: Session, loan_id: int, as_of: date) -> Closure:
         principal_left_paise=res.balances.principal_outstanding_paise,
         receipts=s.scalar(select(func.count()).select_from(m.Receipt).where(
             m.Receipt.loan_id == loan.id, m.Receipt.cancelled_at.is_(None))) or 0)
+
+
+# ---------------------------------------------------------------------------
+# cash and liquidity (Phase 11)
+# ---------------------------------------------------------------------------
+@dataclass
+class CashForecast:
+    as_of: date
+    days: int
+    calendar: list[CalendarDay]            # loan dues + planned items, running from the opening balance
+    accounts: list                         # (CashAccount, latest CashBalance | None)
+    opening_paise: int                     # sum of latest balances (0 without accounts)
+    has_accounts: bool
+    balances_as_of: date | None            # oldest 'latest balance' date: how fresh the opening is
+    stale_days: int
+    expected: object                       # cashflow.Forecast: everyone pays on schedule
+    cautious: object                       # cashflow.Forecast: no money from borrowers already late
+    risky_in_paise: int                    # money in that the cautious view leaves out
+    buffer_paise: int
+
+
+def cash_forecast(s: Session, as_of: date, days: int = 30, book: str | None = None,
+                  buffer_paise: int = 0) -> CashForecast:
+    """Opening balance (latest balance of each active account) + interest and
+    principal due in/out (engine) + planned items, day by day."""
+    from loan_tracker.cashflow import Flow, forecast
+    from loan_tracker.services import latest_balances, planned_items
+
+    horizon = as_of + timedelta(days=days)
+    cal = {d.day: d for d in cash_calendar(s, as_of, days, book)}
+    for p in planned_items(s, as_of, horizon, book):
+        day = cal.setdefault(p.item_date, CalendarDay(p.item_date))
+        item = TodayItem(0, p.description, p.book, "GIVEN" if p.direction == "IN" else "TAKEN",
+                         p.item_date, p.amount_paise, "PLANNED", count=p.id)
+        (day.money_in if p.direction == "IN" else day.money_out).append(item)
+    days_sorted = [cal[d] for d in sorted(cal)]
+    # borrowers already late: their money is not counted in the cautious view
+    late = {i.loan_id for d in days_sorted for i in d.money_in if i.status == "OVERDUE"}
+    flows = []
+    for d in days_sorted:
+        flows += [Flow(d.day, i.amount_paise, risky=i.loan_id in late and i.status != "PLANNED") for i in d.money_in]
+        flows += [Flow(d.day, -i.amount_paise) for i in d.money_out]
+
+    accounts = latest_balances(s, book)
+    with_bal = [b for _, b in accounts if b is not None]
+    opening = sum(b.balance_paise for b in with_bal)
+    oldest = min((b.as_of for b in with_bal), default=None)
+    expected = forecast(opening, flows, as_of, buffer_paise=buffer_paise)
+    cautious = forecast(opening, flows, as_of, buffer_paise=buffer_paise, cautious=True)
+    running = opening
+    for d in days_sorted:
+        d.net_paise = sum(i.amount_paise for i in d.money_in) - sum(i.amount_paise for i in d.money_out)
+        running += d.net_paise
+        d.running_paise = running
+    return CashForecast(as_of, days, days_sorted, accounts, opening, bool(accounts), oldest,
+                        (as_of - oldest).days if oldest else 0, expected, cautious,
+                        sum(f.amount_paise for f in flows if f.risky and f.amount_paise > 0), buffer_paise)
+
+
+def cash_warnings(f: CashForecast) -> list[str]:
+    """Plain-language lines for the dashboard and the daily digest."""
+    if not f.has_accounts:
+        return []
+    out = []
+    floor = f" (your minimum {_inr(f.buffer_paise)})" if f.buffer_paise else ""
+    if f.expected.short_date:
+        out.append(f"Cash: you may be {_inr(f.expected.short_paise)} short on {_dmy(f.expected.short_date)}"
+                   f"{floor}, even if everyone pays on time.")
+    elif f.cautious.short_date:
+        out.append(f"Cash: if borrowers who are already late do not pay, you may be "
+                   f"{_inr(f.cautious.short_paise)} short on {_dmy(f.cautious.short_date)}{floor}.")
+    if f.stale_days >= 14:
+        out.append(f"Cash balances were last updated {f.stale_days} days ago; update them so the "
+                   f"forecast is right.")
+    return out

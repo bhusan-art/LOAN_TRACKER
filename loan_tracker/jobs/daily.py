@@ -125,7 +125,7 @@ def build_digest(s: Session, run_date: date, settings: Settings) -> Digest:
                      for i in ov.promises_due if live(i) and i.on_date == run_date]
     dg.follow_up += [f"{tag(i)} Follow up: {i.party} ({i.detail})" for i in ov.follow_ups if live(i)]
 
-    db = reports.dashboard(s, run_date)
+    db = reports.dashboard(s, run_date, cash_buffer_paise=settings.cash_buffer_paise)
     dg.warnings = list(db.warning_text)
     if run_date.day == 1:
         last_month_end = run_date - timedelta(days=1)
