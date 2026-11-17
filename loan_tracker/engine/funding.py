@@ -25,31 +25,55 @@ def monthly_rate(t: LoanTerms) -> Decimal:
     return t.rate if t.rate_unit == "PER_MONTH" else t.rate / 12
 
 
+def link_exposure(
+    link: FundingLink,
+    terms: Mapping[int, LoanTerms],
+    outstanding: Mapping[int, int],
+) -> int:
+    """Part of a funding link still in use: the link amount scaled by the
+    smaller of the two loans' outstanding/original principal ratios, capped at 1.
+
+    A repaid given loan frees the borrowed money (it is idle again); a repaid
+    taken loan no longer funds anything. Top-ups never raise a link above its amount."""
+    ratio = Decimal(1)
+    for loan_id in (link.given_loan_id, link.taken_loan_id):
+        original = terms[loan_id].principal_paise
+        left = outstanding.get(loan_id, original)
+        ratio = min(ratio, Decimal(max(0, left)) / original if original else Decimal(0))
+    return round_half_up(Decimal(link.amount_paise) * ratio)
+
+
 def spread(
     links: Sequence[FundingLink],
     terms: Mapping[int, LoanTerms],
     taken_principal: Mapping[int, int] | None = None,
+    *,
+    outstanding: Mapping[int, int] | None = None,
 ) -> SpreadReport:
     """Monthly spread per funding link, negative spreads, and idle cost.
 
-    spread = link amount x (given rate - taken rate) / 100, both per month.
+    spread = link exposure x (given rate - taken rate) / 100, both per month.
     Idle cost = borrowed principal not linked to any given loan x its rate.
-    taken_principal: current outstanding principal per TAKEN loan id
-    (defaults to the original principal on the terms)."""
+    outstanding: current principal outstanding per loan id (GIVEN and TAKEN);
+    when given, each link counts only its exposure (link_exposure), otherwise
+    its full amount. taken_principal: older form, TAKEN loans only."""
     out: list[LinkSpread] = []
     linked: dict[int, int] = {}
+    left = dict(taken_principal or {})
+    left.update(outstanding or {})
     for link in links:
         g, t = terms[link.given_loan_id], terms[link.taken_loan_id]
         if g.direction != "GIVEN" or t.direction != "TAKEN":
             raise ValueError(f"funding link {link}: needs a TAKEN source and a GIVEN target")
-        value = round_half_up(Decimal(link.amount_paise) * (monthly_rate(g) - monthly_rate(t)) / 100)
-        out.append(LinkSpread(link, value, value < 0, g.book != t.book))
-        linked[link.taken_loan_id] = linked.get(link.taken_loan_id, 0) + link.amount_paise
+        amount = link_exposure(link, terms, outstanding) if outstanding is not None else link.amount_paise
+        value = round_half_up(Decimal(amount) * (monthly_rate(g) - monthly_rate(t)) / 100)
+        out.append(LinkSpread(link, value, value < 0, g.book != t.book, amount))
+        linked[link.taken_loan_id] = linked.get(link.taken_loan_id, 0) + amount
     idle = Decimal(0)
     for loan_id, t in terms.items():
         if t.direction != "TAKEN":
             continue
-        principal = (taken_principal or {}).get(loan_id, t.principal_paise)
+        principal = left.get(loan_id, t.principal_paise)
         unlinked = max(0, principal - linked.get(loan_id, 0))
         idle += Decimal(unlinked) * monthly_rate(t) / 100
     return SpreadReport(

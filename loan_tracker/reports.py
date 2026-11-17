@@ -95,8 +95,13 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
     db.borrowed_paise = sum(r.result.balances.principal_outstanding_paise for r in taken)
 
     links = [l for l in funding_links(s)]
+    # links can cross books, so exposure needs both loans even when a book is selected
+    all_rows = rows if book is None else portfolio(s, as_of)
+    all_terms = {r.loan.id: to_terms(r.loan) for r in all_rows}
+    outstanding = {r.loan.id: r.result.balances.principal_outstanding_paise for r in all_rows}
     given_ids = {r.loan.id for r in given}
-    funded = sum(l.amount_paise for l in links if l.given_loan_id in given_ids)
+    funded = sum(eng.link_exposure(_eng_link(l), all_terms, outstanding)
+                 for l in links if l.given_loan_id in given_ids and l.taken_loan_id in all_terms)
     db.own_capital_deployed_paise = max(0, db.lent_out_paise - funded)
 
     month_start = as_of.replace(day=1)
@@ -162,10 +167,8 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
         lst.sort(key=lambda i: (i.due_date, i.party))
 
     terms = {r.loan.id: to_terms(r.loan) for r in rows}
-    shown_links = [eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
-                   for l in links if l.taken_loan_id in terms and l.given_loan_id in terms]
-    taken_principal = {r.loan.id: r.result.balances.principal_outstanding_paise for r in taken}
-    rep = eng.spread(shown_links, terms, taken_principal)
+    shown_links = [_eng_link(l) for l in links if l.taken_loan_id in terms and l.given_loan_id in terms]
+    rep = eng.spread(shown_links, terms, outstanding={k: v for k, v in outstanding.items() if k in terms})
     db.idle_cost_paise_per_cycle = rep.idle_cost_paise_per_cycle
     db.negative_spreads = list(rep.negative_spread)
     results = {r.loan.id: r.result for r in rows}
@@ -177,6 +180,10 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
         f"Negative spread: {names[sp.link.given_loan_id]}'s loan earns {_inr(-sp.spread_paise_per_cycle)} a month "
         f"less than borrowing from {names[sp.link.taken_loan_id]} costs." for sp in db.negative_spreads]
     return db
+
+
+def _eng_link(l) -> "eng.FundingLink":
+    return eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
 
 
 def _inr(paise: int) -> str:

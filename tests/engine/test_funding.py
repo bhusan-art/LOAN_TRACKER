@@ -1,7 +1,7 @@
 """Spread and cash-flow mismatch (Examples B and C; 04.7, 04.8)."""
 from decimal import Decimal
 
-from loan_tracker.engine import FundingLink, compute, mismatch_check, spread
+from loan_tracker.engine import FundingLink, compute, link_exposure, mismatch_check, spread
 from tests.engine.helpers import D, P, disburse, pay, terms
 
 SURESH = terms(loan_id=10, direction="TAKEN", book="BUSINESS", rate=Decimal("1.5"), due_day=5)
@@ -69,3 +69,46 @@ class TestFlags:
         yearly = terms(loan_id=11, direction="TAKEN", rate=Decimal("12"), rate_unit="PER_YEAR")
         rep = spread([FundingLink(11, 20, P, D(2026, 1, 1))], {11: yearly, 20: RAVI})
         assert rep.links[0].spread_paise_per_cycle == 150_000  # 2.5% - 1%
+
+
+class TestLinkExposure:
+    """A link only counts what is still outstanding on both loans (Phase 8)."""
+
+    def test_untouched_loans_count_full_amount(self):
+        assert link_exposure(LINK, {10: SURESH, 20: RAVI}, {10: P, 20: P}) == P
+
+    def test_given_half_repaid_halves_the_link(self):
+        assert link_exposure(LINK, {10: SURESH, 20: RAVI}, {10: P, 20: P // 2}) == P // 2
+
+    def test_smaller_ratio_wins(self):
+        # Ravi 75% outstanding, Suresh 40% outstanding -> 40% of the link
+        assert link_exposure(LINK, {10: SURESH, 20: RAVI}, {10: P * 40 // 100, 20: P * 75 // 100}) == 4_000_000
+
+    def test_closed_loan_counts_zero(self):
+        assert link_exposure(LINK, {10: SURESH, 20: RAVI}, {10: P, 20: 0}) == 0
+
+    def test_topup_never_raises_above_link_amount(self):
+        assert link_exposure(LINK, {10: SURESH, 20: RAVI}, {10: P, 20: P * 2}) == P
+
+    def test_partial_link_scales_by_ratio(self):
+        link = FundingLink(10, 20, 3_000_000, D(2026, 1, 1))  # Rs 30,000 of Suresh's 1 lakh
+        # Ravi has repaid 1/3 of his principal -> Rs 20,000 of the link still out
+        assert link_exposure(link, {10: SURESH, 20: RAVI}, {10: P, 20: P * 2 // 3}) == 2_000_000
+
+    def test_rounds_half_up_to_paise(self):
+        link = FundingLink(10, 20, 1, D(2026, 1, 1))
+        assert link_exposure(link, {10: SURESH, 20: RAVI}, {10: P, 20: P // 2}) == 1  # 0.5 -> 1
+
+    def test_spread_uses_outstanding_amounts(self):
+        rep = spread([LINK], {10: SURESH, 20: RAVI}, outstanding={10: P, 20: P // 2})
+        assert rep.links[0].exposure_paise == P // 2
+        assert rep.links[0].spread_paise_per_cycle == 50_000   # half of 100_000
+
+    def test_idle_cost_frees_up_as_given_loan_repays(self):
+        # Ravi repaid half: half of Suresh's 10 lakh now sits unlinked at 1.5%
+        rep = spread([LINK], {10: SURESH, 20: RAVI}, outstanding={10: P, 20: P // 2})
+        assert rep.idle_cost_paise_per_cycle == 75_000
+
+    def test_without_outstanding_keeps_original_amounts(self):
+        rep = spread([LINK], {10: SURESH, 20: RAVI})
+        assert rep.links[0].exposure_paise == P

@@ -354,8 +354,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         from loan_tracker import engine as eng
         rep = eng.spread([eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
                           for l in links], terms,
-                         {r.loan.id: r.result.balances.principal_outstanding_paise
-                          for r in rows if r.loan.direction == "TAKEN"})
+                         outstanding={r.loan.id: r.result.balances.principal_outstanding_paise for r in rows})
         return render(request, "funding.html", links=list(zip(links, rep.links)), by_id=by_id,
                       idle=rep.idle_cost_paise_per_cycle,
                       taken=[r for r in rows if r.loan.direction == "TAKEN"],

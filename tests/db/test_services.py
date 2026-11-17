@@ -140,6 +140,19 @@ class TestDashboard:
         assert db.idle_cost_paise_per_cycle == 0
         assert reports.dashboard(s, as_of, book="PERSONAL").lent_out_paise == 0
 
+    def test_repayment_shrinks_link_exposure(self, s):
+        as_of = D(2026, 1, 2)
+        suresh = make_loan(s, direction="TAKEN", book="PERSONAL", rate="1.5", due_day=5, name="Suresh")
+        ravi = make_loan(s, direction="GIVEN", book="BUSINESS", rate="2.5", due_day=10, name="Ravi")
+        svc.link_funding(s, taken_loan_id=suresh.id, given_loan_id=ravi.id, amount_paise=P // 2,
+                         link_date=D(2026, 1, 1), confirm_cross_book=True)
+        svc.post_entry(s, ravi.id, type="PAYMENT", entry_date=as_of, as_of=as_of, amount_paise=P // 2)
+        db = reports.dashboard(s, as_of, book="BUSINESS")   # Suresh is in the other book
+        # Ravi repaid half: the Rs 50,000 link now funds Rs 25,000; Rs 25,000 of his balance is own money
+        assert (db.lent_out_paise, db.own_capital_deployed_paise) == (P // 2, P // 4)
+        everything = reports.dashboard(s, as_of)
+        assert everything.idle_cost_paise_per_cycle == 112_500   # 75,000 of Suresh's 1 lakh unlinked at 1.5%
+
     def test_cash_calendar_next_30_days(self, s):
         as_of = D(2026, 1, 2)
         make_loan(s, direction="TAKEN", book="BUSINESS", rate="1.5", due_day=5, name="Suresh")

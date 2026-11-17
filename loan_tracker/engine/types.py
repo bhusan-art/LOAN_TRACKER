@@ -117,6 +117,7 @@ class LinkSpread:
     spread_paise_per_cycle: int   # link amount * (rate_given - rate_taken), PER_MONTH-normalised
     negative: bool
     cross_book: bool              # books of the two loans differ (#7)
+    exposure_paise: int = 0       # part of the link still outstanding on both loans
 
 
 @dataclass(frozen=True)
