@@ -136,3 +136,13 @@ class TestAtMaturityBoundaries:
             maturity_date=date(2026, 4, 1),
         )
         assert cycle_boundaries(t, date(2026, 3, 31)) == []
+
+
+def test_database_password_with_special_characters():
+    from sqlalchemy.engine import make_url
+    from loan_tracker.config import _database_url
+    url = _database_url("postgresql+psycopg://loan_tracker@db:5432/loan_tracker", "p@ss:w/rd#9%x 944")
+    u = make_url(url)
+    assert (u.host, u.port, u.username, u.password, u.database) == (
+        "db", 5432, "loan_tracker", "p@ss:w/rd#9%x 944", "loan_tracker")
+    assert _database_url("postgresql+psycopg://a:b@h/d") == "postgresql+psycopg://a:b@h/d"

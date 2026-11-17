@@ -10,10 +10,20 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _database_url(url: str, password: str = "") -> str:
+    """DATABASE_URL with DATABASE_PASSWORD put in safely: a password containing
+    @ : / # % or spaces would otherwise break the URL (it is %-encoded here)."""
+    if not password:
+        return url
+    from sqlalchemy.engine import make_url
+    return make_url(url).set(password=password).render_as_string(hide_password=False)
+
+
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = field(default_factory=lambda: _env(
-        "DATABASE_URL", "postgresql+psycopg://loan_tracker:change-me@127.0.0.1:5432/loan_tracker"))
+    database_url: str = field(default_factory=lambda: _database_url(
+        _env("DATABASE_URL", "postgresql+psycopg://loan_tracker:change-me@127.0.0.1:5432/loan_tracker"),
+        _env("DATABASE_PASSWORD")))
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", "dev-only-change-me"))
     timezone: str = field(default_factory=lambda: _env("APP_TIMEZONE", "Asia/Kolkata"))
     secure_cookies: bool = field(default_factory=lambda: _env("SECURE_COOKIES", "0") == "1")

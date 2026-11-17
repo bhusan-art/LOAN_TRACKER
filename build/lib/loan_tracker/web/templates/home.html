@@ -1,57 +1,104 @@
 {% extends "base.html" %}
-{% from "_due_list.html" import due_list %}
+{% from "_ui.html" import icon, stat, due_item, empty %}
+{% block title %}Overview{% endblock %}
+{% block crumb %}Overview{% endblock %}
 {% block content %}
-<section class="metrics">
-  <div class="metric"><span>Lent out</span><strong>{{ d.lent_out_paise|inr(decimals=False) }}</strong></div>
-  <div class="metric"><span>Borrowed</span><strong>{{ d.borrowed_paise|inr(decimals=False) }}</strong></div>
-  <div class="metric"><span>Own capital deployed</span><strong>{{ d.own_capital_deployed_paise|inr(decimals=False) }}</strong></div>
-  <div class="metric {{ 'neg' if d.net_interest_income.month < 0 }}"><span>Net interest, this month</span>
-    <strong>{{ d.net_interest_income.month|inr(decimals=False) }}</strong></div>
-</section>
+<div class="heading">
+  <div>
+    <div class="eyebrow">Financial workspace{% if book != "all" %} · {{ book|title }} book{% endif %}</div>
+    <h1>Overview</h1>
+    <p class="subtitle">Everything you have lent and borrowed, as of {{ today|dmy }}.</p>
+  </div>
+  <div class="headingActions">
+    <a class="btn" href="/loans/new?direction=GIVEN">{{ icon("plus") }}New loan</a>
+    <a class="btn secondary" href="/quick">{{ icon("plus") }}Record payment</a>
+  </div>
+</div>
 
 {% if d.warning_text %}
-<section class="card warn">
-  <h2>Warnings</h2>
-  <ul>{% for w in d.warning_text %}<li>{{ w }}</li>{% endfor %}</ul>
-</section>
+<div class="card" style="margin-bottom:19px;border-color:var(--orange)">
+  <div class="cardhead"><h2>Needs attention</h2><span class="tag orange">{{ d.warning_text|length }}</span></div>
+  {% for w in d.warning_text %}<div class="alert" style="margin-top:8px">{{ w }}</div>{% endfor %}
+</div>
 {% endif %}
 
-<section class="card">
-  <h2>To pay <small>(next 7 days and overdue)</small></h2>
-  {{ due_list(d.pay_soon) }}
-</section>
-<section class="card">
-  <h2>To collect <small>(next 7 days and overdue)</small></h2>
-  {{ due_list(d.collect_soon) }}
-</section>
+<div class="stats">
+  {{ stat("Total lent out", d.lent_out_paise|inr(decimals=False), "Outstanding principal", "up") }}
+  {{ stat("Total borrowed", d.borrowed_paise|inr(decimals=False), "Outstanding liabilities", "wallet") }}
+  {{ stat("Own capital deployed", d.own_capital_deployed_paise|inr(decimals=False), "After linked borrowed funds", "shield") }}
+  {{ stat("Net interest · this month", d.net_interest_income.month|inr(decimals=False), "Earned " ~ (d.interest_earned.month|inr(decimals=False)) ~ " · cost " ~ (d.interest_cost.month|inr(decimals=False)), "chart") }}
+</div>
 
-<section class="card">
-  <h2>Interest</h2>
-  <table class="num">
-    <tr><th></th><th>Month</th><th>FY</th><th>Lifetime</th></tr>
-    <tr><td>Earned</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.interest_earned[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
-    <tr><td>Cost</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.interest_cost[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
-    <tr class="total"><td>Net</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.net_interest_income[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
-  </table>
-  <p class="muted">Collected {{ d.collected_paise|inr(decimals=False) }} · pending {{ d.pending_paise|inr(decimals=False) }}
-    · yield (last 12 months) {{ "%.2f"|format(d.effective_yield_bps / 100) }}%
-    {% if d.idle_cost_paise_per_cycle %}· idle borrowed money costs {{ d.idle_cost_paise_per_cycle|inr(decimals=False) }}/month{% endif %}</p>
-</section>
+<div class="two">
+  <div class="card">
+    <div class="cardhead"><h2>Interest performance</h2><span class="muted tiny">Last 12 months · by due date</span></div>
+    {% set c = chart_paths(d.trend) %}
+    <div class="legend" style="margin-bottom:10px"><span><i class="dot"></i>Interest earned</span><span><i class="dot green"></i>Interest cost</span>
+      <span style="margin-left:auto">FY so far: net <b class="num">{{ d.net_interest_income.fy|inr(decimals=False) }}</b></span></div>
+    {% if c.max %}
+    <svg class="chart" viewBox="0 0 {{ c.width }} {{ c.height }}" preserveAspectRatio="none" role="img" aria-label="Interest earned and cost per month">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--brand)" stop-opacity=".16"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/></linearGradient></defs>
+      {% for gy in c.grid %}<line x1="0" x2="{{ c.width }}" y1="{{ gy }}" y2="{{ gy }}" stroke="var(--line)" stroke-dasharray="4 4"/>{% endfor %}
+      <polygon points="{{ c.area }}" fill="url(#g)"/>
+      <polyline points="{{ c.earned }}" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      <polyline points="{{ c.cost }}" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="chartlabels">{% for label, e, k in d.trend %}<span>{{ label }}</span>{% endfor %}</div>
+    {% else %}{{ empty("No interest has fallen due in the last 12 months.", "chart") }}{% endif %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Portfolio</h2><a class="link" href="/loans">All loans →</a></div>
+    {% set donut, legend = donut_style(d.status_counts) %}
+    <div class="splitbox" style="gap:22px;flex-wrap:wrap">
+      <div class="donut" style="background:{{ donut }};position:relative"><div class="donut-inner"><b>{{ d.active_loans }}</b><small>Open loans</small></div></div>
+      <div style="flex:1;min-width:150px">
+        {% for label, n, colour in legend %}<div class="metricrow"><span><i class="dot" style="background:{{ colour }}"></i>{{ label }}</span><b>{{ n }}</b></div>
+        {% else %}<p class="muted">No loans yet.</p>{% endfor %}
+      </div>
+    </div>
+    {% if d.overdue_count %}<div class="alert red" style="margin-top:16px">{{ d.overdue_count }} overdue due{{ "s" if d.overdue_count != 1 }} · {{ d.overdue_paise|inr(decimals=False) }}. <a href="/reports" style="font-weight:800">Review →</a></div>{% endif %}
+  </div>
+</div>
 
-<section class="card">
-  <h2>Overdue <small>{{ d.overdue_count }} dues · {{ d.overdue_paise|inr(decimals=False) }}</small></h2>
-  <table class="num">
-    <tr><th>0–30 days</th><th>31–60</th><th>61–90</th><th>90+</th></tr>
-    <tr>{% for k in ["0_30","31_60","61_90","90_plus"] %}<td>{{ d.aging[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
-  </table>
-</section>
+<div class="two equal">
+  <div class="card">
+    <div class="cardhead"><h2>To collect</h2><a class="link" href="/calendar">View calendar →</a></div>
+    {% for i in d.collect_soon %}{{ due_item(i) }}{% else %}{{ empty("Nothing to collect in the next 7 days.", "check") }}{% endfor %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>To pay</h2><a class="link" href="/calendar">View calendar →</a></div>
+    {% for i in d.pay_soon %}{{ due_item(i) }}{% else %}{{ empty("Nothing to pay in the next 7 days.", "check") }}{% endfor %}
+  </div>
+</div>
 
-{% if d.concentration %}
-<section class="card">
-  <h2>Exposure by borrower</h2>
-  <ul class="plain">{% for name, amt, share, flagged in d.concentration %}
-    <li class="{{ 'flag' if flagged }}">{{ name }} · {{ amt|inr(decimals=False) }} · {{ share }}%{% if flagged %} ⚠{% endif %}</li>{% endfor %}</ul>
-</section>
-{% endif %}
-<p class="muted">Daily job: {% if last_job %}last run {{ last_job.run_date|dmy }} {{ "✓" if last_job.ok else "✗ failed" }}{% else %}not run yet{% endif %}</p>
+<div class="three">
+  <div class="card">
+    <div class="cardhead"><h2>Interest</h2></div>
+    <div class="tablewrap"><table>
+      <tr><th></th><th class="right">Month</th><th class="right">FY</th><th class="right">Lifetime</th></tr>
+      <tr><td>Earned</td>{% for k in ["month","fy","lifetime"] %}<td class="tdright num">{{ d.interest_earned[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+      <tr><td>Cost</td>{% for k in ["month","fy","lifetime"] %}<td class="tdright num">{{ d.interest_cost[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+      <tr><td class="tdmain">Net</td>{% for k in ["month","fy","lifetime"] %}<td class="tdright tdmain num">{{ d.net_interest_income[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+    </table></div>
+    <div class="kpi-sub"><span>Collected <b>{{ d.collected_paise|inr(decimals=False) }}</b></span><span>Pending <b>{{ d.pending_paise|inr(decimals=False) }}</b></span>
+      <span>Yield (12 m) <b>{{ "%.2f"|format(d.effective_yield_bps / 100) }}%</b></span></div>
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Overdue aging</h2><span class="muted tiny">{{ d.overdue_count }} dues</span></div>
+    {% set total = d.overdue_paise or 1 %}
+    {% for key, label in [("0_30", "0–30 days"), ("31_60", "31–60 days"), ("61_90", "61–90 days"), ("90_plus", "90+ days")] %}
+    <div style="margin-bottom:14px"><div class="metricrow" style="border:0;padding:0 0 7px"><span>{{ label }}</span><b class="num">{{ d.aging[key]|inr(decimals=False) }}</b></div>
+      <div class="progress red"><span style="width:{{ (d.aging[key] * 100 / total)|round(1) }}%"></span></div></div>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Exposure by borrower</h2></div>
+    {% for name, amt, share, flagged in d.concentration[:6] %}
+    <div style="margin-bottom:14px"><div class="metricrow" style="border:0;padding:0 0 7px"><span>{{ name }}{% if flagged %} <span class="tag red">high</span>{% endif %}</span><b class="num">{{ share }}%</b></div>
+      <div class="progress {{ 'red' if flagged }}"><span style="width:{{ share }}%"></span></div></div>
+    {% else %}{{ empty("No money lent out.", "people") }}{% endfor %}
+    {% if d.idle_cost_paise_per_cycle %}<div class="alert">Unlinked borrowed money costs {{ d.idle_cost_paise_per_cycle|inr(decimals=False) }}/month.</div>{% endif %}
+  </div>
+</div>
+<p class="muted tiny">Daily job: {% if last_job %}last run {{ last_job.run_date|dmy }} — {% if last_job.ok %}<span class="pos">ok</span>{% else %}<span class="negv">failed: {{ last_job.summary }}</span>{% endif %}{% else %}not run yet{% endif %}</p>
 {% endblock %}

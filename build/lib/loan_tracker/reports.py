@@ -80,6 +80,8 @@ class Dashboard:
     warning_text: list[str] = field(default_factory=list)
     negative_spreads: list = field(default_factory=list)
     active_loans: int = 0
+    trend: list = field(default_factory=list)          # [(label, earned, cost)] last 12 months
+    status_counts: dict = field(default_factory=dict)  # loan status -> count
 
 
 def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: int = 7,
@@ -88,13 +90,18 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
     db = Dashboard(as_of=as_of, book=book)
     given = [r for r in rows if r.loan.direction == "GIVEN"]
     taken = [r for r in rows if r.loan.direction == "TAKEN"]
-    db.active_loans = sum(1 for r in rows if r.loan.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF"))
+    db.active_loans = sum(1 for r in rows if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF"))
     db.lent_out_paise = sum(r.result.balances.principal_outstanding_paise for r in given)
     db.borrowed_paise = sum(r.result.balances.principal_outstanding_paise for r in taken)
 
     links = [l for l in funding_links(s)]
+    # links can cross books, so exposure needs both loans even when a book is selected
+    all_rows = rows if book is None else portfolio(s, as_of)
+    all_terms = {r.loan.id: to_terms(r.loan) for r in all_rows}
+    outstanding = {r.loan.id: r.result.balances.principal_outstanding_paise for r in all_rows}
     given_ids = {r.loan.id for r in given}
-    funded = sum(l.amount_paise for l in links if l.given_loan_id in given_ids)
+    funded = sum(eng.link_exposure(_eng_link(l), all_terms, outstanding)
+                 for l in links if l.given_loan_id in given_ids and l.taken_loan_id in all_terms)
     db.own_capital_deployed_paise = max(0, db.lent_out_paise - funded)
 
     month_start = as_of.replace(day=1)
@@ -103,6 +110,20 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
         db.interest_earned[key] = _interest_due_between(rows, "GIVEN", a, b)
         db.interest_cost[key] = _interest_due_between(rows, "TAKEN", a, b)
         db.net_interest_income[key] = db.interest_earned[key] - db.interest_cost[key]
+
+    # 12-month interest trend (by due month), for the overview chart
+    first = (as_of.replace(day=1) - timedelta(days=330)).replace(day=1)
+    months = []
+    m = first
+    while len(months) < 12:
+        months.append(m)
+        m = (m + timedelta(days=32)).replace(day=1)
+    for i, ms in enumerate(months):
+        me = (months[i + 1] - timedelta(days=1)) if i + 1 < len(months) else as_of
+        db.trend.append((ms.strftime("%b"), _interest_due_between(rows, "GIVEN", ms, me),
+                         _interest_due_between(rows, "TAKEN", ms, me)))
+    for r in rows:
+        db.status_counts[r.status] = db.status_counts.get(r.status, 0) + 1
 
     db.collected_paise = sum(r.result.balances.interest_paid_paise for r in given)
     db.pending_paise = sum(r.result.balances.interest_outstanding_paise for r in given)
@@ -139,21 +160,19 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
                                     unpaid[0].due.due_date, sum(d.outstanding_paise for d in unpaid),
                                     worst, max(d.overdue_days for d in unpaid), len(unpaid)))
         p = r.result.projected_due
-        if p and p.due_date <= horizon and r.loan.status not in ("SETTLED", "WRITTEN_OFF"):
+        if p and p.due_date <= horizon and r.status not in ("SETTLED", "WRITTEN_OFF"):
             target.append(TodayItem(r.loan.id, r.loan.party.name, r.loan.book, r.loan.direction,
                                     p.due_date, p.interest_paise, "UPCOMING"))
     for lst in (db.pay_soon, db.collect_soon):
         lst.sort(key=lambda i: (i.due_date, i.party))
 
     terms = {r.loan.id: to_terms(r.loan) for r in rows}
-    shown_links = [eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
-                   for l in links if l.taken_loan_id in terms and l.given_loan_id in terms]
-    taken_principal = {r.loan.id: r.result.balances.principal_outstanding_paise for r in taken}
-    rep = eng.spread(shown_links, terms, taken_principal)
+    shown_links = [_eng_link(l) for l in links if l.taken_loan_id in terms and l.given_loan_id in terms]
+    rep = eng.spread(shown_links, terms, outstanding={k: v for k, v in outstanding.items() if k in terms})
     db.idle_cost_paise_per_cycle = rep.idle_cost_paise_per_cycle
     db.negative_spreads = list(rep.negative_spread)
     results = {r.loan.id: r.result for r in rows}
-    written_off = frozenset(r.loan.id for r in rows if r.loan.status == "WRITTEN_OFF")
+    written_off = frozenset(r.loan.id for r in rows if r.status == "WRITTEN_OFF")
     db.warnings = eng.mismatch_check(shown_links, results, written_off)
     names = {r.loan.id: r.loan.party.name for r in rows}
     db.warning_text = [describe_flag(f, names) for f in db.warnings]
@@ -161,6 +180,10 @@ def dashboard(s: Session, as_of: date, book: str | None = None, *, soon_days: in
         f"Negative spread: {names[sp.link.given_loan_id]}'s loan earns {_inr(-sp.spread_paise_per_cycle)} a month "
         f"less than borrowing from {names[sp.link.taken_loan_id]} costs." for sp in db.negative_spreads]
     return db
+
+
+def _eng_link(l) -> "eng.FundingLink":
+    return eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
 
 
 def _inr(paise: int) -> str:
@@ -206,7 +229,7 @@ def cash_calendar(s: Session, as_of: date, days: int = 30, book: str | None = No
 
     for row in portfolio(s, as_of, book=book):
         loan = row.loan
-        if loan.status in ("SETTLED", "WRITTEN_OFF", "CLOSED"):
+        if row.status in ("SETTLED", "WRITTEN_OFF", "CLOSED"):
             continue
         incoming = loan.direction == "GIVEN"
         unpaid = [d for d in row.result.dues if d.outstanding_paise > 0]
@@ -284,9 +307,9 @@ def export_csv(s: Session, as_of: date, book: str | None = None) -> str:
         for a in r.result.allocations:
             allocs[a.entry_id].append(a)
         for e in r.loan.entries:
-            base = [r.loan.id, r.loan.party.name, r.loan.direction, r.loan.book, e.id,
+            base = [r.loan.id, _cell(r.loan.party.name), r.loan.direction, r.loan.book, e.id,
                     e.entry_date.isoformat(), e.type, rupees(e.amount_paise)]
-            tail = [e.reverses_id or "", e.note or ""]
+            tail = [e.reverses_id or "", _cell(e.note)]
             if allocs.get(e.id):
                 for a in allocs[e.id]:
                     w.writerow(base + [a.bucket, rupees(a.amount_paise),
@@ -296,9 +319,31 @@ def export_csv(s: Session, as_of: date, book: str | None = None) -> str:
     return buf.getvalue()
 
 
+def _cell(text: str | None) -> str:
+    """Text cell safe to open in Excel: a leading = + - @ would run as a formula."""
+    t = text or ""
+    return "'" + t if t[:1] in ("=", "+", "-", "@", "\t", "\r") else t
+
+
 def rupees(paise: int | None) -> str:
     """10_000_050 -> '100000.50' (plain, for CSV)."""
     if paise is None:
         return ""
     sign = "-" if paise < 0 else ""
     return f"{sign}{abs(paise) // 100}.{abs(paise) % 100:02d}"
+
+
+def calendar_weeks(cal: list[CalendarDay], start: date, end: date) -> list[list[tuple[date, CalendarDay | None, bool]]]:
+    """Sunday-first weeks covering [start, end] for the month-grid view.
+    Each cell: (day, CalendarDay or None, in_window)."""
+    by_day = {d.day: d for d in cal}
+    first = start - timedelta(days=(start.weekday() + 1) % 7)
+    last = end + timedelta(days=(5 - end.weekday()) % 7)
+    weeks, week, d = [], [], first
+    while d <= last:
+        week.append((d, by_day.get(d), start <= d <= end))
+        if len(week) == 7:
+            weeks.append(week)
+            week = []
+        d += timedelta(days=1)
+    return weeks

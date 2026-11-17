@@ -1,35 +1,83 @@
-<!doctype html>
+{% from "_ui.html" import icon %}<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#1f4e79">
-  <title>{% block title %}Loan Tracker{% endblock %}</title>
+  <meta name="theme-color" content="#6558e8">
+  <title>{% block title %}Loan Tracker{% endblock %} · Ledgerly</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=2">
+  <script>try { if (localStorage.getItem("theme") === "dark") document.documentElement.classList.add("dark-pending"); } catch (e) {}</script>
 </head>
-<body class="book-{{ book }}">
+<body>
+<script>if (document.documentElement.classList.contains("dark-pending")) document.body.classList.add("dark");</script>
 {% if user %}
-<header class="top">
-  <a class="brand" href="/">Loans</a>
-  <nav class="book-toggle" aria-label="Book">
-    {% for key, label in [("all", "All"), ("business", "Business"), ("personal", "Personal")] %}
-      <a href="/book/{{ key }}" class="{{ 'on' if book == key }}">{{ label }}</a>
-    {% endfor %}
-  </nav>
-</header>
-<nav class="tabs">
-  <a href="/">Home</a><a href="/quick">+ Payment</a><a href="/loans">Loans</a>
-  <a href="/parties">People</a><a href="/calendar">Calendar</a><a href="/reports">Reports</a>
-</nav>
+{% set path = request.url.path %}
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="/"><span class="brandmark">◈</span>ledgerly<span style="color:var(--brand)">.</span></a>
+    <div class="navtitle">Workspace</div>
+    <nav class="nav">
+      {% for href, label, ic in [("/", "Overview", "dashboard"), ("/loans", "Loans", "wallet"), ("/parties", "People", "people"), ("/calendar", "Cash calendar", "calendar"), ("/reports", "Reports", "chart"), ("/funding", "Funding links", "link"), ("/activity", "Activity log", "clock")] %}
+      <a href="{{ href }}" class="{{ 'active' if (href == '/' and path == '/') or (href != '/' and path.startswith(href)) }}">{{ icon(ic) }}{{ label }}
+        {% if href == "/loans" and nav_overdue %}<span class="numb">{{ nav_overdue }}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+    <div class="navtitle" style="margin-top:22px">Quick actions</div>
+    <nav class="nav">
+      <a href="/quick" class="{{ 'active' if path == '/quick' }}">{{ icon("plus") }}Record payment</a>
+      <a href="/loans/new?direction=GIVEN">{{ icon("plus") }}Lend money</a>
+      <a href="/loans/new?direction=TAKEN">{{ icon("plus") }}Borrow money</a>
+      <a href="/export.csv">{{ icon("download") }}Export CSV</a>
+    </nav>
+    <div class="sidebottom">
+      <div class="sideuser">
+        <div class="avatar">{{ user[:2]|upper }}</div>
+        <div><strong>{{ user }}</strong><small>Private workspace</small></div>
+        <a class="iconbtn" style="margin-left:auto" href="/logout" title="Log out">{{ icon("logout") }}</a>
+      </div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="iconbtn mobilemenu" type="button" aria-label="Menu" onclick="document.getElementById('sidebar').classList.toggle('open')">{{ icon("menu") }}</button>
+        <div class="breadcrumbs">Workspace &nbsp;/&nbsp; <b>{% block crumb %}Overview{% endblock %}</b></div>
+      </div>
+      <div class="topactions">
+        <div class="book" role="group" aria-label="Book">
+          {% for key, label in [("all", "All"), ("business", "Business"), ("personal", "Personal")] %}
+          <a href="/book/{{ key }}" class="{{ 'selected' if book == key }}" {{ 'aria-current="true"'|safe if book == key }}>{{ label }}</a>
+          {% endfor %}
+        </div>
+        <button class="iconbtn" type="button" aria-label="Dark mode" onclick="toggleTheme()">{{ icon("moon") }}</button>
+      </div>
+    </header>
+    <div class="content">
+      {% if insecure_secret %}<div class="banner">SECRET_KEY is not set to a long random value in .env — logins are not secure until you set it and restart.</div>{% endif %}
+      {% block content %}{% endblock %}
+      <div class="footerline">Ledgerly · amounts calculated by the ledger engine as of {{ today|dmy }}</div>
+    </div>
+  </div>
+</div>
+{% else %}
+{% block public %}{% endblock %}
 {% endif %}
-<main>
-  {% if flash %}<p class="flash ok">{{ flash }}</p>{% endif %}
-  {% if error %}<p class="flash err">{{ error }}</p>{% endif %}
-  {% block content %}{% endblock %}
-</main>
-{% if user %}<footer><a href="/funding">Funding links</a> · <a href="/export.csv">Export CSV</a> · <a href="/logout">Log out</a></footer>{% endif %}
-<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+{% if flash or error %}
+<div class="flash {{ 'err' if error else 'ok' }}" role="status"><button type="button" aria-label="Close" onclick="this.parentElement.remove()">×</button>{{ error or flash }}</div>
+<script>setTimeout(function () { var f = document.querySelector(".flash.ok"); if (f) f.remove(); }, 6000);</script>
+{% endif %}
+<script>
+function toggleTheme() {
+  var dark = document.body.classList.toggle("dark");
+  try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
+}
+document.addEventListener("click", function (e) {
+  var s = document.getElementById("sidebar");
+  if (s && s.classList.contains("open") && !s.contains(e.target) && !e.target.closest(".mobilemenu")) s.classList.remove("open");
+});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+</script>
 </body>
 </html>

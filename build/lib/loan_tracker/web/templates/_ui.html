@@ -1,0 +1,45 @@
+{% import "_icons.html" as _i with context %}
+{% macro icon(name) -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ (_i.ICONS[name] or _i.ICONS["dashboard"])|safe }}</svg>
+{%- endmacro %}
+
+{% macro loan_tag(status) -%}
+{% set c = {"ACTIVE": "green", "OVERDUE": "red", "MATURED": "orange", "CLOSED": "gray", "SETTLED": "purple", "WRITTEN_OFF": "gray"} %}
+<span class="tag {{ c.get(status, 'gray') }}">{{ status|replace("_", " ")|title }}</span>
+{%- endmacro %}
+
+{% macro due_tag(status) -%}
+{% set c = {"PAID": "green", "PARTIAL": "orange", "OVERDUE": "red", "WAIVED": "purple", "UPCOMING": "gray", "PRINCIPAL": "purple"} %}
+<span class="tag {{ c.get(status, 'gray') }}">{{ status|title }}</span>
+{%- endmacro %}
+
+{% macro dir_tag(direction) -%}
+{% if direction == "GIVEN" %}<span class="tag purple">Given</span>{% else %}<span class="tag orange">Taken</span>{% endif %}
+{%- endmacro %}
+
+{% macro book_tag(book) -%}
+<span class="tag gray">{{ book|title }}</span>
+{%- endmacro %}
+
+{% macro stat(label, value, foot, ic) -%}
+<div class="stat">
+  <div class="stathead"><span>{{ label }}</span><div class="sym">{{ icon(ic) }}</div></div>
+  <strong class="num">{{ value }}</strong>
+  <div class="statfoot">{{ foot }}</div>
+</div>
+{%- endmacro %}
+
+{% macro empty(text, ic="spark") -%}
+<div class="empty">{{ icon(ic) }}<div>{{ text }}</div></div>
+{%- endmacro %}
+
+{% macro due_item(i) -%}
+<div class="listitem">
+  <div class="bubble {{ 'green' if i.direction == 'GIVEN' else 'red' }}">{{ icon('down' if i.direction == 'GIVEN' else 'up') }}</div>
+  <a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong>
+    <small>{{ "To collect" if i.direction == "GIVEN" else "To pay" }} ·
+      {% if i.count > 1 %}{{ i.count }} dues since {{ i.due_date|dmy }}{% else %}due {{ i.due_date|dmy }}{% endif %} · {{ i.book|title }}</small></a>
+  <div class="right"><b class="num">{{ i.amount_paise|inr }}</b><br>
+    {% if i.overdue_days %}<span class="tag red">{{ i.overdue_days }}d late</span>{% else %}{{ due_tag(i.status) }}{% endif %}</div>
+</div>
+{%- endmacro %}

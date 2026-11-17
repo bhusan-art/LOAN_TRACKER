@@ -23,7 +23,9 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://loan_tracker:${POSTGRES_PASSWORD}@db:5432/loan_tracker
+      # password passed separately so any character in it works (@, #, :, /, %)
+      DATABASE_URL: postgresql+psycopg://loan_tracker@db:5432/loan_tracker
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
@@ -35,7 +37,9 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://loan_tracker:${POSTGRES_PASSWORD}@db:5432/loan_tracker
+      # password passed separately so any character in it works (@, #, :, /, %)
+      DATABASE_URL: postgresql+psycopg://loan_tracker@db:5432/loan_tracker
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       app:
         condition: service_started

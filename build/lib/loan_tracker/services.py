@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from loan_tracker import engine as eng
@@ -159,6 +159,8 @@ def create_loan(
         raise ServiceError("choose a book: BUSINESS or PERSONAL")
     if principal_paise <= 0:
         raise ServiceError("principal must be more than zero")
+    if start_date > as_of:
+        raise ServiceError("start date is in the future; record the loan on the day the money moves")
     if maturity_date is not None and maturity_date <= start_date:
         raise ServiceError("maturity date must be after the start date")
     if interest_cycle == "AT_MATURITY" and maturity_date is None:
@@ -321,6 +323,12 @@ class LoanRow:
     loan: m.Loan
     result: eng.EngineResult
 
+    @property
+    def status(self) -> str:
+        """Owner decisions (SETTLED / WRITTEN_OFF) win; otherwise the engine's
+        status as of the computed date (never the possibly stale cached column)."""
+        return self.loan.status if self.loan.status in OWNER_STATUSES else self.result.loan_status
+
 
 def portfolio(s: Session, as_of: date, book: str | None = None,
               direction: str | None = None, party_id: int | None = None) -> list[LoanRow]:
@@ -332,6 +340,36 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
     if party_id:
         q = q.where(m.Loan.party_id == party_id)
     return [LoanRow(loan, compute_loan(loan, as_of)) for loan in s.scalars(q.order_by(m.Loan.id)).all()]
+
+
+# ---------------------------------------------------------------------------
+# audit log (Phase 8): same transaction as the change, so a failed change
+# leaves no audit row and a saved change always has one
+# ---------------------------------------------------------------------------
+AUDIT_SECRET_KEYS = ("password", "code", "totp", "secret", "token")
+
+
+def audit(s: Session, actor: str, action: str, entity: str | None = None, entity_id: int | None = None,
+          ip: str | None = None, **detail) -> m.AuditLog:
+    clean = {k: (v if isinstance(v, (int, bool, type(None))) else str(v)) for k, v in detail.items()
+             if not any(x in k.lower() for x in AUDIT_SECRET_KEYS)}
+    row = m.AuditLog(actor=actor or "unknown", action=action, entity=entity, entity_id=entity_id,
+                     detail=clean, ip=ip)
+    s.add(row)
+    s.flush()
+    return row
+
+
+def audit_log(s: Session, limit: int = 200, loan_id: int | None = None) -> list[m.AuditLog]:
+    """Newest first. loan_id: the loan's own rows plus its entries and links."""
+    q = select(m.AuditLog)
+    if loan_id is not None:
+        q = q.where(or_(
+            (m.AuditLog.entity == "loan") & (m.AuditLog.entity_id == loan_id),
+            m.AuditLog.detail["loan_id"].astext == str(loan_id),
+            m.AuditLog.detail["taken_loan_id"].astext == str(loan_id),
+            m.AuditLog.detail["given_loan_id"].astext == str(loan_id)))
+    return list(s.scalars(q.order_by(m.AuditLog.id.desc()).limit(limit)))
 
 
 def funding_links(s: Session) -> list[m.FundingLink]:

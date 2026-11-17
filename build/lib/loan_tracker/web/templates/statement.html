@@ -1,32 +1,44 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon %}
 {% block title %}Statement · {{ loan.party.name }}{% endblock %}
+{% block crumb %}Statement LN-{{ loan.id }}{% endblock %}
 {% block content %}
-<article class="statement">
-  <h1>Loan statement</h1>
-  <p><b>{{ loan.party.name }}</b>{% if loan.party.phone %} · {{ loan.party.phone }}{% endif %}<br>
-    {{ "Loan given" if loan.direction == "GIVEN" else "Loan taken" }} on {{ loan.start_date|dmy }}:
-    {{ loan.principal_paise|inr }} at {{ loan.rate|pct }} {{ "per month" if loan.rate_unit == "PER_MONTH" else "per year" }}<br>
-    Statement date: {{ today|dmy }}</p>
-  <table class="num">
-    <tr><th>Date</th><th>Entry</th><th>Amount</th><th>Applied to</th></tr>
+<div class="heading no-print">
+  <div><div class="eyebrow">Statement</div><h1>{{ loan.party.name }} · LN-{{ loan.id }}</h1></div>
+  <div class="headingActions"><a class="btn secondary" href="/loans/{{ loan.id }}">Back to loan</a>
+    <button class="btn" type="button" onclick="window.print()">{{ icon("download") }}Print / save PDF</button></div>
+</div>
+<div class="card statement">
+  <div class="cardhead"><div><div class="eyebrow">Loan statement</div>
+    <div class="big">{{ loan.party.name }}</div>
+    <p class="muted" style="margin:6px 0 0">{{ loan.party.phone or "" }}</p></div>
+    <div style="text-align:right"><b>Statement date</b><br><span class="muted">{{ today|dmy }}</span></div></div>
+  <div class="metricrow"><span>{{ "Loan given" if loan.direction == "GIVEN" else "Loan taken" }} on</span><b>{{ loan.start_date|dmy }}</b></div>
+  <div class="metricrow"><span>Amount</span><b>{{ loan.principal_paise|inr }}</b></div>
+  <div class="metricrow"><span>Interest</span><b>{{ loan.rate|pct }} {{ "per month" if loan.rate_unit == "PER_MONTH" else "per year" }}, due on day {{ loan.due_day }}</b></div>
+
+  <h3 style="margin:26px 0 10px">Transactions</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Date</th><th>Entry</th><th class="right">Amount</th><th>Applied to</th></tr>
     {% for e in loan.entries if e.type != "REVERSAL" and e.id not in reversed_ids %}
-    <tr><td class="left">{{ e.entry_date|dmy }}</td><td>{{ e.type|lower|replace("_"," ") }}</td>
-      <td>{{ e.amount_paise|inr if e.amount_paise else (e.new_rate|pct if e.new_rate is not none else "") }}</td>
+    <tr><td>{{ e.entry_date|dmy }}</td><td>{{ e.type|replace("_", " ")|title }}</td>
+      <td class="tdright num">{{ e.amount_paise|inr if e.amount_paise else (e.new_rate|pct if e.new_rate is not none else "") }}</td>
       <td class="muted">{% for a in r.allocations if a.entry_id == e.id %}{{ a.bucket|lower }} {{ a.amount_paise|inr }}{{ ", " if not loop.last }}{% endfor %}</td></tr>
     {% endfor %}
-  </table>
-  <h2>Interest dues</h2>
-  <table class="num">
-    <tr><th>Due date</th><th>Interest</th><th>Paid</th><th>Balance</th></tr>
-    {% for d in r.dues %}<tr><td class="left">{{ d.due.due_date|dmy }}</td><td>{{ d.due.interest_paise|inr }}</td>
-      <td>{{ (d.paid_paise + d.waived_paise)|inr }}</td><td>{{ d.outstanding_paise|inr }}</td></tr>{% endfor %}
-  </table>
-  <table class="num totals">
-    <tr><td class="left">Principal outstanding</td><td>{{ r.balances.principal_outstanding_paise|inr }}</td></tr>
-    <tr><td class="left">Interest outstanding</td><td>{{ r.balances.interest_outstanding_paise|inr }}</td></tr>
-    <tr><td class="left">Interest since last due date</td><td>{{ r.balances.open_period_paise|inr }}</td></tr>
-    <tr class="total"><td class="left">Amount to close the loan today</td><td>{{ r.balances.payoff_today_paise|inr }}</td></tr>
-  </table>
-  <p class="no-print"><button onclick="window.print()">Print / save as PDF</button></p>
-</article>
+  </table></div>
+
+  <h3 style="margin:26px 0 10px">Interest dues</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Due date</th><th class="right">Interest</th><th class="right">Paid</th><th class="right">Balance</th></tr>
+    {% for d in r.dues %}<tr><td>{{ d.due.due_date|dmy }}</td><td class="tdright num">{{ d.due.interest_paise|inr }}</td>
+      <td class="tdright num">{{ (d.paid_paise + d.waived_paise)|inr }}</td><td class="tdright num">{{ d.outstanding_paise|inr }}</td></tr>{% endfor %}
+  </table></div>
+
+  <div style="margin-top:22px">
+    <div class="metricrow"><span>Principal outstanding</span><b>{{ r.balances.principal_outstanding_paise|inr }}</b></div>
+    <div class="metricrow"><span>Interest outstanding</span><b>{{ r.balances.interest_outstanding_paise|inr }}</b></div>
+    <div class="metricrow"><span>Interest since last due date</span><b>{{ r.balances.open_period_paise|inr }}</b></div>
+    <div class="metricrow"><span><b style="color:var(--text)">Amount to close the loan today</b></span><b class="big" style="font-size:22px">{{ r.balances.payoff_today_paise|inr }}</b></div>
+  </div>
+</div>
 {% endblock %}

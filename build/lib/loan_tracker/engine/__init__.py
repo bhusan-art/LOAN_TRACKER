@@ -6,7 +6,7 @@ No database, no I/O, no clock: the same inputs always give the same output.
 from datetime import date
 from typing import Sequence
 
-from loan_tracker.engine.funding import mismatch_check, spread
+from loan_tracker.engine.funding import link_exposure, mismatch_check, spread
 from loan_tracker.engine.replay import replay
 from loan_tracker.engine.status import aging_bucket, balances, due_status, loan_status
 from loan_tracker.engine.types import (
@@ -60,5 +60,5 @@ __all__ = [
     "AccrualResult", "Allocation", "Balances", "Due", "DueStatus", "EngineError",
     "EngineResult", "FundingLink", "LedgerEntry", "LoanTerms", "MismatchFlag",
     "ProjectedDue", "SpreadReport", "accrue", "aging_bucket", "compute",
-    "mismatch_check", "spread",
+    "link_exposure", "mismatch_check", "spread",
 ]

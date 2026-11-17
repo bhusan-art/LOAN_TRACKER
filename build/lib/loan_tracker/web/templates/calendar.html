@@ -1,23 +1,51 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, stat, empty %}
 {% block title %}Cash calendar{% endblock %}
+{% block crumb %}Cash calendar{% endblock %}
 {% block content %}
-<section class="card">
-  <div class="row between"><h1>Next {{ days }} days</h1>
-    <span>{% for n in [30, 60, 90] %}<a class="{{ 'button' if n == days else 'button secondary' }}" href="?days={{ n }}">{{ n }}</a> {% endfor %}</span></div>
-  <p class="muted">Expected interest (and principal at maturity), assuming no other payments.
-    Unpaid past dues are shown on today. The running total starts at ₹0 because the app doesn't know your bank balance.</p>
-</section>
-{% for day in cal %}
-<section class="card day {{ 'neg' if day.running_paise < 0 }}">
-  <div class="row between"><b>{{ day.day|dmy }}</b>
-    <span class="muted">net {{ day.net_paise|inr(decimals=False) }} · running <b class="{{ 'bad' if day.running_paise < 0 }}">{{ day.running_paise|inr(decimals=False) }}</b></span></div>
-  <ul class="flows">
-    {% for i in day.money_in %}<li class="in"><span>+ {{ i.amount_paise|inr(decimals=False) }}</span>
-      <a href="/loans/{{ i.loan_id }}">{{ i.party }}</a> <span class="muted">{{ note(i) }}</span></li>{% endfor %}
-    {% for i in day.money_out %}<li class="out"><span>− {{ i.amount_paise|inr(decimals=False) }}</span>
-      <a href="/loans/{{ i.loan_id }}">{{ i.party }}</a> <span class="muted">{{ note(i) }}</span></li>{% endfor %}
-  </ul>
-</section>
-{% else %}<section class="card"><p class="muted">Nothing expected.</p></section>{% endfor %}
+<div class="heading">
+  <div><div class="eyebrow">Planning</div><h1>Cash calendar</h1>
+    <p class="subtitle">Expected interest (and principal at maturity), assuming no other payments. Unpaid past dues show on today.</p></div>
+  <nav class="tabs" aria-label="Window">{% for n in [30, 60, 90] %}<a class="{{ 'active' if n == days }}" href="?days={{ n }}">{{ n }} days</a>{% endfor %}</nav>
+</div>
+<div class="stats">
+  {{ stat("Expected collections", totals.in|inr(decimals=False), "Next " ~ days ~ " days incl. arrears", "down") }}
+  {{ stat("Expected payments", totals.out|inr(decimals=False), "Next " ~ days ~ " days incl. arrears", "up") }}
+  {{ stat("Projected net", totals.net|inr(decimals=False), "Collections − payments", "chart") }}
+  {{ stat("Lowest running total", totals.low|inr(decimals=False), ("Goes negative on " ~ (totals.low_day|dmy)) if totals.low_day else "Never below ₹0 in this window", "clock") }}
+</div>
+<div class="two">
+  <div class="card">
+    <div class="cardhead"><h2>{{ today.strftime("%B %Y") }}{% if weeks|length > 5 %} onward{% endif %}</h2></div>
+    <div class="calgrid">
+      {% for h in ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"] %}<div class="calhead">{{ h }}</div>{% endfor %}
+      {% for week in weeks %}{% for day, entry, inside in week %}
+      <div class="calday {{ 'today' if day == today }} {{ 'past' if not inside }}">
+        <b>{{ day.day }}{% if day.day == 1 %} {{ day.strftime("%b") }}{% endif %}</b>
+        {% if entry %}
+          {% for i in entry.money_in[:2] %}<span class="calpill" title="{{ i.party }}">+{{ i.amount_paise|inr(decimals=False) }}</span>{% endfor %}
+          {% for i in entry.money_out[:2] %}<span class="calpill out" title="{{ i.party }}">−{{ i.amount_paise|inr(decimals=False) }}</span>{% endfor %}
+          {% set more = entry.money_in|length + entry.money_out|length - (entry.money_in[:2]|length) - (entry.money_out[:2]|length) %}
+          {% if more > 0 %}<span class="tiny muted">+{{ more }} more</span>{% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}{% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Scheduled</h2><span class="muted tiny">Running total starts at ₹0</span></div>
+    {% for day in cal %}
+      {% for i in day.money_in %}
+      <div class="listitem"><div class="bubble">{{ day.day.day }}</div>
+        <a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Collection · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>
+        <div class="right"><b class="pos num">+{{ i.amount_paise|inr }}</b><br><small>{{ day.day|dmy }}</small></div></div>
+      {% endfor %}
+      {% for i in day.money_out %}
+      <div class="listitem"><div class="bubble red">{{ day.day.day }}</div>
+        <a class="cover" href="/loans/{{ i.loan_id }}"><strong>{{ i.party }}</strong><small>Payment · LN-{{ i.loan_id }} · {{ i.book|title }}{% if i.count > 1 %} · {{ i.count }} unpaid dues{% elif i.status == "PRINCIPAL" %} · principal{% elif i.status in ("OVERDUE", "PARTIAL") %} · unpaid{% endif %}</small></a>
+        <div class="right"><b class="negv num">−{{ i.amount_paise|inr }}</b><br><small>running {{ day.running_paise|inr(decimals=False) }}</small></div></div>
+      {% endfor %}
+    {% else %}{{ empty("Nothing expected in this window.", "calendar") }}{% endfor %}
+  </div>
+</div>
 {% endblock %}
-{% macro note(i) %}{% if i.status == "PRINCIPAL" %}principal at maturity{% elif i.count > 1 %}{{ i.count }} unpaid dues{% elif i.status in ("OVERDUE", "PARTIAL") %}unpaid{% else %}interest{% endif %}{% if i.book == "BUSINESS" %} · biz{% else %} · per{% endif %}{% endmacro %}

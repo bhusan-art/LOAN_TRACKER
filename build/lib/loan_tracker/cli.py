@@ -30,11 +30,16 @@ def cmd_create_user(args) -> None:
     secret = None if args.no_2fa else auth.new_totp_secret()
     with session_scope() as s:
         u = s.scalar(select(m.AppUser).where(m.AppUser.username == args.username))
+        created = u is None
         if u is None:
             u = m.AppUser(username=args.username, password_hash="")
             s.add(u)
         u.password_hash = auth.hash_password(password)
         u.totp_secret = secret
+        s.flush()
+        from loan_tracker import services as svc
+        svc.audit(s, "cli", "USER_CREATED" if created else "USER_RESET", "app_user", u.id,
+                  username=args.username, two_factor=secret is not None)
     print(f"User '{args.username}' saved.")
     if secret:
         print("\nAdd this account to your authenticator app (Google Authenticator, Aegis, ...):")

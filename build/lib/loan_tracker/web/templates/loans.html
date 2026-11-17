@@ -1,30 +1,55 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, stat, loan_tag, dir_tag, book_tag, empty %}
 {% block title %}Loans{% endblock %}
+{% block crumb %}Loans{% endblock %}
 {% block content %}
-<section class="card">
-  <div class="row between"><h1>Loans</h1>
-    <span><a class="button" href="/loans/new?direction=GIVEN">+ Lend</a> <a class="button secondary" href="/loans/new?direction=TAKEN">+ Borrow</a></span></div>
-  <form class="row filters">
-    <select name="direction" onchange="this.form.submit()">
-      <option value="">Both directions</option>
-      <option value="GIVEN" {{ "selected" if direction == "GIVEN" }}>Lent (given)</option>
-      <option value="TAKEN" {{ "selected" if direction == "TAKEN" }}>Borrowed (taken)</option></select>
-    <select name="status" onchange="this.form.submit()">
-      <option value="">Any status</option>
-      {% for st in ["ACTIVE","OVERDUE","MATURED","CLOSED","SETTLED","WRITTEN_OFF"] %}
-      <option {{ "selected" if status == st }}>{{ st }}</option>{% endfor %}</select>
-  </form>
-  <div class="scroll"><table class="num">
-    <tr><th>Who</th><th>Principal left</th><th>Payoff today</th><th>Next due</th><th>Status</th></tr>
-    {% for r in rows %}
-    <tr class="st-{{ r.loan.status|lower }}">
-      <td class="left"><a href="/loans/{{ r.loan.id }}">{{ "←" if r.loan.direction == "GIVEN" else "→" }} {{ r.loan.party.name }}</a>
-        <span class="tag">{{ "BIZ" if r.loan.book == "BUSINESS" else "PER" }}</span></td>
-      <td>{{ r.result.balances.principal_outstanding_paise|inr(decimals=False) }}</td>
-      <td>{{ r.result.balances.payoff_today_paise|inr(decimals=False) }}</td>
-      <td>{{ r.result.projected_due.due_date|dmy if r.result.projected_due else "—" }}</td>
-      <td>{{ r.loan.status|lower }}</td></tr>
-    {% else %}<tr><td colspan="5" class="muted">No loans yet.</td></tr>{% endfor %}
+<div class="heading">
+  <div><div class="eyebrow">Portfolio</div><h1>Loans</h1>
+    <p class="subtitle">Every loan, its terms and where it stands today.</p></div>
+  <div class="headingActions">
+    <a class="btn" href="/loans/new?direction=GIVEN">{{ icon("plus") }}Lend money</a>
+    <a class="btn secondary" href="/loans/new?direction=TAKEN">{{ icon("plus") }}Borrow money</a>
+  </div>
+</div>
+{% set open_rows = all_rows|rejectattr("status", "in", ["CLOSED", "SETTLED", "WRITTEN_OFF"])|list %}
+<div class="stats">
+  {{ stat("Total loans", all_rows|length, "All statuses", "wallet") }}
+  {{ stat("Open", open_rows|length, "Active, overdue or matured", "check") }}
+  {{ stat("Overdue", all_rows|selectattr("status", "equalto", "OVERDUE")|list|length, "Needs follow-up", "clock") }}
+  {{ stat("Principal outstanding", (all_rows|sum(attribute="result.balances.principal_outstanding_paise"))|inr(decimals=False), "Given + taken", "chart") }}
+</div>
+<div class="card">
+  <div class="searchrow">
+    <nav class="tabs" aria-label="Filter">
+      {% for key, label in [("", "All"), ("GIVEN", "Given"), ("TAKEN", "Taken"), ("ACTIVE", "Active"), ("OVERDUE", "Overdue"), ("CLOSED", "Closed")] %}
+      {% set is_dir = key in ("GIVEN", "TAKEN") %}
+      {% set on = (is_dir and direction == key) or (not is_dir and key and status == key) or (not key and not direction and not status) %}
+      <a class="{{ 'active' if on }}" href="?{{ ('direction=' ~ key) if is_dir else ('status=' ~ key) if key else '' }}{{ '&q=' ~ q|urlencode if q }}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <form class="search" method="get">
+      {% if direction %}<input type="hidden" name="direction" value="{{ direction }}">{% endif %}
+      {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+      {{ icon("search") }}<input name="q" value="{{ q }}" placeholder="Search person…" aria-label="Search person">
+    </form>
+  </div>
+  {% if rows %}
+  <div class="tablewrap"><table>
+    <tr><th>Loan</th><th>Counterparty</th><th>Type</th><th class="hide-sm">Book</th><th class="right">Principal left</th><th class="right hide-sm">Payoff today</th><th class="hide-sm">Rate</th><th>Status</th><th class="hide-sm"></th></tr>
+    {% for r in rows %}{% set L = r.loan %}
+    <tr>
+      <td><a class="tdmain linkish" href="/loans/{{ L.id }}">LN-{{ L.id }}</a><div class="tdsub">{{ L.start_date|dmy }}</div></td>
+      <td><a class="tdmain" href="/parties/{{ L.party_id }}">{{ L.party.name }}</a><div class="tdsub">{{ L.purpose or ("Next due " ~ (r.result.projected_due.due_date|dmy) if r.result.projected_due else "—") }}</div></td>
+      <td>{{ dir_tag(L.direction) }}</td>
+      <td class="hide-sm">{{ book_tag(L.book) }}</td>
+      <td class="tdright tdmain num">{{ r.result.balances.principal_outstanding_paise|inr(decimals=False) }}</td>
+      <td class="tdright num hide-sm">{{ r.result.balances.payoff_today_paise|inr(decimals=False) }}</td>
+      <td class="hide-sm">{{ L.rate|pct }} / {{ "mo" if L.rate_unit == "PER_MONTH" else "yr" }}</td>
+      <td>{{ loan_tag(r.status) }}</td>
+      <td class="hide-sm"><a class="linkish" href="/loans/{{ L.id }}">View →</a></td>
+    </tr>
+    {% endfor %}
   </table></div>
-</section>
+  {% else %}{{ empty("No loans match.", "wallet") }}{% endif %}
+</div>
 {% endblock %}
