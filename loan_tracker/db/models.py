@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, Text
-from sqlalchemy.dialects.postgresql import ENUM
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -150,3 +150,16 @@ class JobRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ok: Mapped[bool | None] = mapped_column(Boolean)
     summary: Mapped[str | None] = mapped_column(Text)
+
+
+class AuditLog(Base):
+    """Append-only (DB trigger). Written only through services.audit()."""
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    actor: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    entity: Mapped[str | None] = mapped_column(Text)
+    entity_id: Mapped[int | None] = mapped_column(ID)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ip: Mapped[str | None] = mapped_column(Text)

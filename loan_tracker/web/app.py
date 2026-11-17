@@ -52,7 +52,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
-    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style)
+    templates.env.filters.update(when=lambda dt: fmt.when(dt, settings.timezone))
+    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style,
+                                 action_labels=fmt.ACTION_LABELS)
     insecure_secret = (len(settings.secret_key) < 32 or "change-me" in settings.secret_key
                        or settings.secret_key.startswith("dev-only"))
 
@@ -67,6 +69,11 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             raise
         finally:
             session.close()
+
+    def log(request: Request, s: Session, action: str, entity: str | None = None,
+            entity_id: int | None = None, actor: str | None = None, **detail) -> None:
+        svc.audit(s, actor or request.session.get("user") or "unknown", action, entity, entity_id,
+                  ip=request.client.host if request.client else None, **detail)
 
     def user(request: Request) -> str:
         name = request.session.get("user")
@@ -195,6 +202,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         while fails and now - fails[0] > 900:
             fails.popleft()
         if len(fails) >= 5:
+            log(request, s, "LOGIN_BLOCKED", actor=username.strip()[:100])
             return back(request, "/login", error="Too many attempts. Wait 15 minutes.")
         u = s.scalar(select(m.AppUser).where(m.AppUser.username == username.strip()))
         ok = u is not None and auth.verify_password(password, u.password_hash)
@@ -202,14 +210,18 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             ok = auth.verify_totp(u.totp_secret, code)
         if not ok:
             fails.append(now)
+            log(request, s, "LOGIN_FAILED", actor=username.strip()[:100])
             return back(request, "/login", error="Wrong username, password or code.")
         fails.clear()
         request.session.clear()  # new session on login (prevents session fixation)
         request.session["user"] = u.username
+        log(request, s, "LOGIN_OK", "app_user", u.id)
         return RedirectResponse("/", status_code=303)
 
     @app.get("/logout")
-    def logout(request: Request):
+    def logout(request: Request, s: Session = Depends(db)):
+        if request.session.get("user"):
+            log(request, s, "LOGOUT")
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
 
@@ -237,6 +249,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                        address: str = Form(""), notes: str = Form(""), _: str = Depends(user),
                        s: Session = Depends(db)):
         p = svc.create_party(s, name, phone=phone, address=address, notes=notes)
+        log(request, s, "PARTY_CREATED", "party", p.id, name=p.name)
         return back(request, f"/parties/{p.id}", flash=f"Added {p.name}.")
 
     @app.get("/parties/{party_id}", response_class=HTMLResponse)
@@ -252,6 +265,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                      s: Session = Depends(db)):
         svc.update_party(s, party_id, name=name, phone=phone, address=address, id_proof_ref=id_proof_ref,
                          guarantor=guarantor, notes=notes, risk_tag=risk_tag)
+        log(request, s, "PARTY_UPDATED", "party", party_id, name=name)
         return back(request, f"/parties/{party_id}", flash="Saved.")
 
     @app.get("/loans", response_class=HTMLResponse)
@@ -287,6 +301,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             due_day=int(due_day) if due_day else None, grace_days=grace_days,
             maturity_date=parse_date(maturity_date, None) if maturity_date else None,
             purpose=purpose, collateral=collateral, payment_mode=payment_mode, as_of=t)
+        log(request, s, "LOAN_CREATED", "loan", loan.id, direction=loan.direction, book=loan.book,
+            principal_paise=loan.principal_paise, rate=loan.rate)
         return back(request, f"/loans/{loan.id}", flash="Loan created.")
 
     @app.get("/loans/{loan_id}", response_class=HTMLResponse)
@@ -313,6 +329,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             s, loan_id, type=type, entry_date=parse_date(entry_date, t), as_of=t,
             amount_paise=svc.rupees_to_paise(amount) if amount else None,
             new_rate=new_rate or None, payment_mode=payment_mode, reference=reference, note=note)
+        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
+            amount_paise=e.amount_paise, entry_date=e.entry_date)
         msg = f"{type.title()} recorded."
         if type == "PAYMENT":
             split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
@@ -329,12 +347,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             raise svc.ServiceError(f"entry {entry_id} not found")
         loan_id = original.loan_id
         svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=note)
+        log(request, s, "ENTRY_REVERSED", "ledger_entry", entry_id, loan_id=loan_id, type=original.type,
+            amount_paise=original.amount_paise, note=note or None)
         return back(request, f"/loans/{loan_id}", flash=f"Entry {entry_id} reversed.")
 
     @app.post("/loans/{loan_id}/status", dependencies=[Depends(check_csrf)])
     def loan_status(loan_id: int, request: Request, status: str = Form(""), _: str = Depends(user),
                     s: Session = Depends(db)):
+        before = svc.get_loan(s, loan_id).status
         svc.set_owner_status(s, loan_id, status or None, today())
+        log(request, s, "STATUS_CHANGED", "loan", loan_id, before=before, after=status or "ACTIVE")
         return back(request, f"/loans/{loan_id}", flash="Status updated.")
 
     @app.get("/quick", response_class=HTMLResponse)
@@ -352,6 +374,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         e, res = svc.post_entry(s, loan_id, type="PAYMENT", entry_date=parse_date(entry_date, t), as_of=t,
                                 amount_paise=svc.rupees_to_paise(amount), payment_mode=payment_mode,
                                 reference=reference)
+        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
+            amount_paise=e.amount_paise, entry_date=e.entry_date, via="quick")
         split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
                           for a in res.allocations if a.entry_id == e.id)
         return back(request, "/quick", flash=f"Saved {fmt.inr(e.amount_paise)} on loan #{loan_id}: "
@@ -376,10 +400,18 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def funding_create(request: Request, taken_loan_id: int = Form(...), given_loan_id: int = Form(...),
                        amount: str = Form(...), link_date: str = Form(""),
                        confirm_cross_book: str = Form(""), _: str = Depends(user), s: Session = Depends(db)):
-        svc.link_funding(s, taken_loan_id=taken_loan_id, given_loan_id=given_loan_id,
-                         amount_paise=svc.rupees_to_paise(amount), link_date=parse_date(link_date, today()),
-                         confirm_cross_book=bool(confirm_cross_book))
+        link = svc.link_funding(s, taken_loan_id=taken_loan_id, given_loan_id=given_loan_id,
+                                amount_paise=svc.rupees_to_paise(amount), link_date=parse_date(link_date, today()),
+                                confirm_cross_book=bool(confirm_cross_book))
+        log(request, s, "FUNDING_LINKED", "funding_link", link.id, taken_loan_id=taken_loan_id,
+            given_loan_id=given_loan_id, amount_paise=link.amount_paise)
         return back(request, "/funding", flash="Funding link saved.")
+
+    @app.get("/activity", response_class=HTMLResponse)
+    def activity_page(request: Request, loan_id: int | None = None, _: str = Depends(user),
+                      s: Session = Depends(db)):
+        rows = svc.audit_log(s, limit=300, loan_id=loan_id)
+        return render(request, "activity.html", rows=rows, loan_id=loan_id)
 
     @app.get("/calendar", response_class=HTMLResponse)
     def calendar_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
@@ -451,8 +483,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return jsonable(reports_parties(s, today(), BOOKS[book_of(request)], q))
 
     @app.post("/api/parties", status_code=201)
-    def api_party_create(payload: PartyIn, _: str = Depends(user), s: Session = Depends(db)):
+    def api_party_create(request: Request, payload: PartyIn, _: str = Depends(user), s: Session = Depends(db)):
         p = svc.create_party(s, payload.name, **payload.model_dump(exclude={"name"}))
+        log(request, s, "PARTY_CREATED", "party", p.id, name=p.name, via="api")
         return {"id": p.id, "name": p.name}
 
     @app.get("/api/loans")
@@ -473,11 +506,13 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return out
 
     @app.post("/api/loans", status_code=201)
-    def api_loan_create(payload: LoanIn, _: str = Depends(user), s: Session = Depends(db)):
+    def api_loan_create(request: Request, payload: LoanIn, _: str = Depends(user), s: Session = Depends(db)):
         t = today()
         fields = payload.model_dump(exclude={"start_date", "rate"})
         loan = svc.create_loan(s, start_date=payload.start_date or t, rate=svc.parse_rate(payload.rate),
                                as_of=t, **fields)
+        log(request, s, "LOAN_CREATED", "loan", loan.id, direction=loan.direction, book=loan.book,
+            principal_paise=loan.principal_paise, rate=loan.rate, via="api")
         return {"id": loan.id}
 
     @app.get("/api/loans/{loan_id}/entries")
@@ -489,24 +524,33 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                  "reverses_id": e.reverses_id} for e in reversed(loan.entries)]
 
     @app.post("/api/loans/{loan_id}/entries", status_code=201)
-    def api_entry_create(loan_id: int, payload: EntryIn, _: str = Depends(user), s: Session = Depends(db)):
+    def api_entry_create(request: Request, loan_id: int, payload: EntryIn, _: str = Depends(user),
+                         s: Session = Depends(db)):
         t = today()
         e, res = svc.post_entry(s, loan_id, entry_date=payload.entry_date or t, as_of=t,
                                 **payload.model_dump(exclude={"entry_date"}))
+        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
+            amount_paise=e.amount_paise, entry_date=e.entry_date, via="api")
         return {"id": e.id, "allocations": jsonable([a for a in res.allocations if a.entry_id == e.id]),
                 "balances": jsonable(res.balances)}
 
     @app.post("/api/entries/{entry_id}/reverse", status_code=201)
-    def api_reverse(entry_id: int, payload: ReverseIn | None = None, _: str = Depends(user),
+    def api_reverse(request: Request, entry_id: int, payload: ReverseIn | None = None, _: str = Depends(user),
                     s: Session = Depends(db)):
         t = today()
-        res = svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=payload.note if payload else None)
+        note = payload.note if payload else None
+        res = svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=note)
+        original = s.get(m.LedgerEntry, entry_id)
+        log(request, s, "ENTRY_REVERSED", "ledger_entry", entry_id, loan_id=original.loan_id,
+            type=original.type, amount_paise=original.amount_paise, note=note, via="api")
         return {"balances": jsonable(res.balances)}
 
     @app.post("/api/funding", status_code=201)
-    def api_funding(payload: FundingIn, _: str = Depends(user), s: Session = Depends(db)):
+    def api_funding(request: Request, payload: FundingIn, _: str = Depends(user), s: Session = Depends(db)):
         link = svc.link_funding(s, link_date=payload.link_date or today(),
                                 **payload.model_dump(exclude={"link_date"}))
+        log(request, s, "FUNDING_LINKED", "funding_link", link.id, taken_loan_id=link.taken_loan_id,
+            given_loan_id=link.given_loan_id, amount_paise=link.amount_paise, via="api")
         return {"id": link.id}
 
     @app.get("/api/calendar")

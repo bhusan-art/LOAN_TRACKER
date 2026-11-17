@@ -85,3 +85,22 @@ def donut_style(counts: dict) -> tuple[str, list[tuple[str, int, str]]]:
             acc += share
             legend.append((key.replace("_", " ").title(), c, colour))
     return "conic-gradient(" + ",".join(parts) + ")", legend
+
+
+def when(dt, tz: str = "Asia/Kolkata") -> str:
+    """Audit timestamp in the owner's timezone: '17 Nov 2026, 16:48'."""
+    if dt is None:
+        return ""
+    from zoneinfo import ZoneInfo
+    return dt.astimezone(ZoneInfo(tz)).strftime("%d %b %Y, %H:%M")
+
+
+ACTION_LABELS = {
+    "LOGIN_OK": ("Logged in", "green"), "LOGIN_FAILED": ("Failed login", "red"),
+    "LOGIN_BLOCKED": ("Login blocked", "red"), "LOGOUT": ("Logged out", "gray"),
+    "PARTY_CREATED": ("Person added", "purple"), "PARTY_UPDATED": ("Person edited", "purple"),
+    "LOAN_CREATED": ("Loan created", "green"), "ENTRY_POSTED": ("Entry recorded", "purple"),
+    "ENTRY_REVERSED": ("Entry reversed", "orange"), "STATUS_CHANGED": ("Status changed", "orange"),
+    "FUNDING_LINKED": ("Funding linked", "purple"), "USER_CREATED": ("User created", "gray"),
+    "USER_RESET": ("Login reset", "orange"),
+}

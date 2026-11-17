@@ -169,3 +169,32 @@ def test_html_form_missing_field_shows_message(client):
     login(client)
     page = post(client, "/funding", {"amount": "5"}, headers={"referer": "/funding"})
     assert "Please check the form" in page.text
+
+
+def test_audit_log_records_changes_and_logins(client):
+    login(client, code="000000")                       # one failed attempt first
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Audit"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 100_000, "start_date": "2026-01-01",
+                                          "rate": "2"}).json()["id"]
+    eid = post(client, f"/loans/{lid}/entries", {"type": "PAYMENT", "amount": "100",
+                                                  "entry_date": "2026-01-20"},
+               headers={"referer": f"/loans/{lid}"}) and client.get(f"/api/loans/{lid}/entries").json()[0]["id"]
+    post(client, f"/entries/{eid}/reverse", {"note": "wrong loan"}, headers={"referer": f"/loans/{lid}"})
+    post(client, f"/loans/{lid}/status", {"status": "SETTLED"}, headers={"referer": f"/loans/{lid}"})
+    page = client.get("/activity").text
+    for label in ["Failed login", "Logged in", "Person added", "Loan created", "Entry recorded",
+                  "Entry reversed", "Status changed", "“wrong loan”", "SETTLED"]:
+        assert label in page, label
+    assert "a long password" not in page
+    history = client.get(f"/activity?loan_id={lid}").text
+    assert "Entry reversed" in history and "Person added" not in history
+
+
+def test_failed_change_leaves_no_audit_row(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Nope"}).json()["id"]
+    client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                    "principal_paise": 100, "start_date": "2026-05-01", "rate": "2"})
+    assert "Loan created" not in client.get("/activity").text

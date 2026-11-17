@@ -175,3 +175,17 @@ class TestDashboard:
 def test_csv_neutralises_formulas(s):
     make_loan(s, name="=HYPERLINK(\"http://x\")")
     assert "'=HYPERLINK" in reports.export_csv(s, D(2026, 1, 2))
+
+
+class TestAuditLog:
+    def test_append_only_and_no_secrets(self, s):
+        row = svc.audit(s, "owner", "LOGIN_OK", "app_user", 1, ip="10.0.0.5",
+                        password="hunter2", totp_code="123456", note="hello")
+        assert row.detail == {"note": "hello"}
+        from sqlalchemy import text
+        with pytest.raises(Exception, match="append-only"):
+            with s.begin_nested():
+                s.execute(text("UPDATE audit_log SET actor = 'x' WHERE id = :i"), {"i": row.id})
+        with pytest.raises(Exception, match="append-only"):
+            with s.begin_nested():
+                s.execute(text("DELETE FROM audit_log WHERE id = :i"), {"i": row.id})

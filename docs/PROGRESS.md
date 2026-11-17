@@ -54,6 +54,13 @@
 - Phase 7: Dockerfile, compose (db, app, scheduler), backup.sh/.ps1, Caddyfile, README.
   100 tests (74 engine + 26 database/web/job).
 
+- Phase 8 (V2 foundation): funding links count only what is still outstanding on
+  both loans (engine.link_exposure; spread, idle cost, own capital deployed).
+  Typed JSON API bodies (pydantic, via FastAPI): integer paise, enums, readable 400.
+  Migration 0002 audit_log (append-only trigger): logins, loans, entries, reversals,
+  status, parties, funding, CLI users; /activity page + per-loan history. 121 tests.
+
 ## Next step
-Owner: follow README section 1 on the PC, create the login, add real loans.
-Later (v2): EMI/compound interest, second user, borrower SMS/WhatsApp, attachments.
+V2 plan: Phase 9 collections (follow-ups, promises, WhatsApp button), 10 receipts,
+11 cash accounts + shortfall, 12 what-if simulator.
+
