@@ -15,6 +15,7 @@ from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -27,6 +28,7 @@ from loan_tracker.config import Settings, get_settings, today as clock_today
 from loan_tracker.db import models as m
 from loan_tracker.db.session import session_factory
 from loan_tracker.web import formatting as fmt
+from loan_tracker.web.schemas import EntryIn, FundingIn, LoanIn, PartyIn, ReverseIn, describe
 
 HERE = Path(__file__).resolve().parent
 BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
@@ -143,6 +145,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "login required"}, status_code=401)
         return RedirectResponse("/login", status_code=303)
+
+    @app.exception_handler(RequestValidationError)
+    async def _bad_request(request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        if not request.url.path.startswith("/api/"):   # HTML form: back to the page with a message
+            request.session["error"] = "Please check the form: " + describe(errors)
+            return RedirectResponse(referer(request), status_code=303)
+        return JSONResponse({"detail": describe(errors),
+                             "errors": [{"field": ".".join(str(x) for x in e.get("loc", ()) if x != "body"),
+                                         "message": e.get("msg")} for e in errors]}, status_code=400)
 
     @app.exception_handler(svc.ServiceError)
     async def _service_error(request: Request, exc: svc.ServiceError):
@@ -439,8 +451,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return jsonable(reports_parties(s, today(), BOOKS[book_of(request)], q))
 
     @app.post("/api/parties", status_code=201)
-    def api_party_create(payload: dict, _: str = Depends(user), s: Session = Depends(db)):
-        p = svc.create_party(s, payload.get("name", ""), **{k: v for k, v in payload.items() if k != "name"})
+    def api_party_create(payload: PartyIn, _: str = Depends(user), s: Session = Depends(db)):
+        p = svc.create_party(s, payload.name, **payload.model_dump(exclude={"name"}))
         return {"id": p.id, "name": p.name}
 
     @app.get("/api/loans")
@@ -461,17 +473,11 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return out
 
     @app.post("/api/loans", status_code=201)
-    def api_loan_create(payload: dict, _: str = Depends(user), s: Session = Depends(db)):
+    def api_loan_create(payload: LoanIn, _: str = Depends(user), s: Session = Depends(db)):
         t = today()
-        loan = svc.create_loan(
-            s, party_id=int(payload["party_id"]), direction=payload.get("direction", ""),
-            book=payload.get("book", ""), principal_paise=int(payload["principal_paise"]),
-            start_date=parse_date(payload.get("start_date"), t), rate=svc.parse_rate(payload["rate"]),
-            rate_unit=payload.get("rate_unit", "PER_MONTH"),
-            interest_cycle=payload.get("interest_cycle", "MONTHLY"), due_day=payload.get("due_day"),
-            grace_days=int(payload.get("grace_days", 3)),
-            maturity_date=parse_date(payload.get("maturity_date"), None) if payload.get("maturity_date") else None,
-            purpose=payload.get("purpose"), collateral=payload.get("collateral"), as_of=t)
+        fields = payload.model_dump(exclude={"start_date", "rate"})
+        loan = svc.create_loan(s, start_date=payload.start_date or t, rate=svc.parse_rate(payload.rate),
+                               as_of=t, **fields)
         return {"id": loan.id}
 
     @app.get("/api/loans/{loan_id}/entries")
@@ -483,29 +489,24 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                  "reverses_id": e.reverses_id} for e in reversed(loan.entries)]
 
     @app.post("/api/loans/{loan_id}/entries", status_code=201)
-    def api_entry_create(loan_id: int, payload: dict, _: str = Depends(user), s: Session = Depends(db)):
+    def api_entry_create(loan_id: int, payload: EntryIn, _: str = Depends(user), s: Session = Depends(db)):
         t = today()
-        e, res = svc.post_entry(
-            s, loan_id, type=payload.get("type", ""), entry_date=parse_date(payload.get("entry_date"), t),
-            as_of=t, amount_paise=payload.get("amount_paise"), new_rate=payload.get("new_rate"),
-            payment_mode=payload.get("payment_mode", "CASH"), reference=payload.get("reference"),
-            note=payload.get("note"))
+        e, res = svc.post_entry(s, loan_id, entry_date=payload.entry_date or t, as_of=t,
+                                **payload.model_dump(exclude={"entry_date"}))
         return {"id": e.id, "allocations": jsonable([a for a in res.allocations if a.entry_id == e.id]),
                 "balances": jsonable(res.balances)}
 
     @app.post("/api/entries/{entry_id}/reverse", status_code=201)
-    def api_reverse(entry_id: int, payload: dict | None = None, _: str = Depends(user),
+    def api_reverse(entry_id: int, payload: ReverseIn | None = None, _: str = Depends(user),
                     s: Session = Depends(db)):
         t = today()
-        res = svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=(payload or {}).get("note"))
+        res = svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=payload.note if payload else None)
         return {"balances": jsonable(res.balances)}
 
     @app.post("/api/funding", status_code=201)
-    def api_funding(payload: dict, _: str = Depends(user), s: Session = Depends(db)):
-        link = svc.link_funding(
-            s, taken_loan_id=int(payload["taken_loan_id"]), given_loan_id=int(payload["given_loan_id"]),
-            amount_paise=int(payload["amount_paise"]), link_date=parse_date(payload.get("link_date"), today()),
-            confirm_cross_book=bool(payload.get("confirm_cross_book")))
+    def api_funding(payload: FundingIn, _: str = Depends(user), s: Session = Depends(db)):
+        link = svc.link_funding(s, link_date=payload.link_date or today(),
+                                **payload.model_dump(exclude={"link_date"}))
         return {"id": link.id}
 
     @app.get("/api/calendar")

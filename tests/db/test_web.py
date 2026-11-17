@@ -128,3 +128,44 @@ def test_future_start_date_rejected(client):
     r = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
                                         "principal_paise": 100, "start_date": "2026-05-01", "rate": "2"})
     assert r.status_code == 400 and "future" in r.json()["detail"]
+
+
+def test_api_rejects_bad_shapes_with_readable_400(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Shape"}).json()["id"]
+    base = {"party_id": pid, "direction": "GIVEN", "book": "BUSINESS", "principal_paise": 100_000,
+            "start_date": "2026-01-01", "rate": "2"}
+    for bad, field in [({"principal_paise": 1000.5}, "principal_paise"),      # money is integer paise
+                       ({"principal_paise": "1000"}, "principal_paise"),      # no silent string -> int
+                       ({"principal_paise": 0}, "principal_paise"),
+                       ({"direction": "LENT"}, "direction"),
+                       ({"rate": "-1"}, "rate"),
+                       ({"due_day": 32}, "due_day"),
+                       ({"start_date": "01/01/2026"}, "start_date"),
+                       ({"princpal": 5}, "princpal")]:                         # typos are not ignored
+        r = client.post("/api/loans", json=base | bad)
+        assert r.status_code == 400, bad
+        assert field in r.json()["detail"] and r.json()["errors"][0]["field"] == field
+    assert client.get("/api/loans").json() == []
+    assert client.post("/api/loans", json=base).status_code == 201
+
+
+def test_api_entry_and_funding_shapes(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "E"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 100_000, "start_date": "2026-01-01",
+                                          "rate": "2"}).json()["id"]
+    assert client.post(f"/api/loans/{lid}/entries", json={"type": "DISBURSE", "amount_paise": 5}).status_code == 400
+    assert client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 5.0}).status_code == 400
+    ok = client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 500,
+                                                        "entry_date": "2026-01-20", "payment_mode": "UPI"})
+    assert ok.status_code == 201
+    assert client.post("/api/funding", json={"taken_loan_id": lid, "given_loan_id": lid}).status_code == 400
+    assert client.post(f"/api/entries/{ok.json()['id']}/reverse", json={"note": "typo"}).status_code == 201
+
+
+def test_html_form_missing_field_shows_message(client):
+    login(client)
+    page = post(client, "/funding", {"amount": "5"}, headers={"referer": "/funding"})
+    assert "Please check the form" in page.text
