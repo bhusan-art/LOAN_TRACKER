@@ -459,3 +459,54 @@ def collections_overview(s: Session, as_of: date, book: str | None = None, *, so
 def _dmy(d: date) -> str:
     from loan_tracker.web.formatting import dmy
     return dmy(d)
+
+
+
+# ---------------------------------------------------------------------------
+# closure certificate (Phase 10)
+# ---------------------------------------------------------------------------
+@dataclass
+class Closure:
+    loan: object
+    status: str                 # CLOSED (repaid in full) or SETTLED (by agreement)
+    closed_on: date             # date of the last live money entry
+    lent_paise: int             # disbursed + top-ups
+    received_paise: int         # all live payments
+    principal_repaid_paise: int
+    interest_paid_paise: int
+    penalty_paid_paise: int
+    interest_waived_paise: int
+    principal_left_paise: int   # 0 when CLOSED; may be > 0 when SETTLED
+    receipts: int
+
+
+def closure_summary(s: Session, loan_id: int, as_of: date) -> Closure:
+    """No-dues certificate data for a loan you GAVE that is CLOSED (repaid in
+    full) or SETTLED. Raises ServiceError otherwise."""
+    from sqlalchemy import func, select
+    from loan_tracker.db import models as m
+    from loan_tracker.services import ServiceError, compute_loan, get_loan, live_payments
+    loan = get_loan(s, loan_id)
+    if loan.direction != "GIVEN":
+        raise ServiceError("a no-dues certificate is issued for loans you gave")
+    res = compute_loan(loan, as_of)
+    status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else res.loan_status
+    if status not in ("CLOSED", "SETTLED"):
+        raise ServiceError("the loan is not closed yet: a certificate is available once it is repaid "
+                           "in full or marked Settled")
+    reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
+    live = [e for e in loan.entries if e.type != "REVERSAL" and e.id not in reversed_ids]
+    by = defaultdict(int)
+    for a in res.allocations:
+        by[a.bucket] += a.amount_paise
+    return Closure(
+        loan=loan, status=status,
+        closed_on=max((e.entry_date for e in live if e.type in ("PAYMENT", "WAIVER", "DISBURSE", "TOPUP")),
+                      default=loan.start_date),
+        lent_paise=sum(e.amount_paise for e in live if e.type in ("DISBURSE", "TOPUP")),
+        received_paise=sum(a for _, a in live_payments(loan)),
+        principal_repaid_paise=by["PRINCIPAL"], interest_paid_paise=res.balances.interest_paid_paise,
+        penalty_paid_paise=by["PENALTY"], interest_waived_paise=res.balances.interest_waived_paise,
+        principal_left_paise=res.balances.principal_outstanding_paise,
+        receipts=s.scalar(select(func.count()).select_from(m.Receipt).where(
+            m.Receipt.loan_id == loan.id, m.Receipt.cancelled_at.is_(None))) or 0)

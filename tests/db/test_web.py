@@ -252,3 +252,62 @@ def test_api_docs_after_login(client):
     login(client)
     assert "/api/loans" in client.get("/api/openapi.json").json()["paths"]
     assert client.get("/api/docs").status_code == 200
+
+
+def test_receipts_and_certificate_pages(client):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi Kumar", "phone": "98480 12345"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 10_000_000, "start_date": "2026-01-01",
+                                          "rate": "2", "due_day": 1, "collateral": "gold chain"}).json()["id"]
+    r = post(client, f"/loans/{lid}/entries", {"type": "PAYMENT", "amount": "2,000", "entry_date": "2026-02-01",
+                                                "payment_mode": "UPI", "reference": "UPI123"},
+             headers={"referer": f"/loans/{lid}"})
+    assert "Receipt RCPT-2026-0001 issued." in r.text and "RCPT-2026-0001" in r.text
+    rid = client.get("/api/receipts").json()[0]["id"]
+    page = client.get(f"/receipts/{rid}").text
+    assert "Ravi Kumar" in page and "Rupees Two Thousand Only" in page and "UPI123" in page
+    assert "https://wa.me/919848012345?text=Receipt%20RCPT-2026-0001" in page
+    assert "RECEIPT_NAME" in page                                  # hint while no issuer name is set
+    assert client.get(f"/api/receipts/{rid}").json()["amount_in_words"] == "Rupees Two Thousand Only"
+    assert "RCPT-2026-0001" in client.get("/receipts?q=ravi").text
+    assert "No receipts yet" in client.get("/receipts?q=nobody").text
+
+    # not closed yet -> no certificate
+    assert "not closed yet" in client.get(f"/loans/{lid}/closure", follow_redirects=True).text
+    # pay off: principal + Feb interest (1 Feb paid) + Mar 1 due + open period to 1 Apr... use payoff
+    payoff = client.get(f"/api/loans/{lid}").json()["balances"]["payoff_today_paise"]
+    client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": payoff,
+                                                   "entry_date": "2026-04-01"})
+    cert = client.get(f"/loans/{lid}/closure").text
+    assert "No-dues certificate" in cert and "nothing is due" in cert and "NDC-LN-" in cert
+    assert "gold chain" in cert and "Receipts issued</span><b>2</b>" in cert
+    assert "No-dues certificate" in client.get(f"/loans/{lid}").text
+
+    # reversal keeps the receipt, marked cancelled, and the certificate goes away
+    eid = client.get("/api/receipts").json()[0]["ledger_entry_id"]
+    client.post(f"/api/entries/{eid}/reverse", json={"note": "bounced"})
+    latest = client.get("/api/receipts").json()[0]
+    assert latest["cancelled"] and "bounced" in latest["cancel_reason"]
+    assert "CANCELLED" in client.get(f"/receipts/{latest['id']}").text
+    assert "not closed yet" in client.get(f"/loans/{lid}/closure", follow_redirects=True).text
+
+
+def test_receipt_issuer_name_from_settings(s):
+    s.add(m.AppUser(username="owner", password_hash=auth.hash_password("a long password"), totp_secret=SECRET))
+    s.flush()
+    maker = sessionmaker(bind=s.connection(), join_transaction_mode="create_savepoint", expire_on_commit=False)
+    settings = Settings(secret_key="test", receipt_name="A. Owner", receipt_business_name="Example Finance",
+                        receipt_details="Main Road · 98480 00000")
+    c = TestClient(create_app(settings, maker=maker, today_fn=lambda: D(2026, 4, 1)))
+    login(c)
+    pid = c.post("/api/parties", json={"name": "P"}).json()["id"]
+    for book in ("BUSINESS", "PERSONAL"):
+        lid = c.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": book,
+                                         "principal_paise": 100_000, "start_date": "2026-01-01",
+                                         "rate": "2"}).json()["id"]
+        c.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 500})
+    biz, per = sorted(c.get("/api/receipts").json(), key=lambda r: r["number"])
+    assert "Example Finance" in c.get(f"/receipts/{biz['id']}").text
+    page = c.get(f"/receipts/{per['id']}").text
+    assert "A. Owner" in page and "Main Road · 98480 00000" in page and "RECEIPT_NAME" not in page

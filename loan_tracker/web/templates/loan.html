@@ -16,6 +16,7 @@
   <div class="headingActions">
     <a class="btn secondary" href="/reports/statement/{{ loan.id }}">{{ icon("file") }}Statement</a>
     <a class="btn secondary" href="/activity?loan_id={{ loan.id }}">{{ icon("clock") }}History</a>
+    {% if can_close %}<a class="btn" href="/loans/{{ loan.id }}/closure">{{ icon("check") }}No-dues certificate</a>{% endif %}
     {% if given %}{% if wa %}<a class="btn wa" href="{{ wa }}" target="_blank" rel="noopener">{{ icon("chat") }}WhatsApp reminder</a>
     {% else %}<a class="btn secondary" href="/parties/{{ loan.party_id }}" title="Add a mobile number to send WhatsApp reminders">{{ icon("chat") }}Add phone for WhatsApp</a>{% endif %}{% endif %}
   </div>
@@ -157,6 +158,10 @@
 
 <div class="card">
   <div class="cardhead"><h2>Ledger</h2><span class="muted tiny">Append-only · corrections are reversals</span></div>
+  {% if missing_receipts %}<form method="post" action="/receipts/backfill" class="notice" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="loan_id" value="{{ loan.id }}">
+    <span>{{ missing_receipts }} older payment{{ "s" if missing_receipts != 1 }} on this loan {{ "have" if missing_receipts != 1 else "has" }} no receipt.</span>
+    <button class="btn sm">Issue receipt{{ "s" if missing_receipts != 1 }}</button></form>{% endif %}
   <div class="ledger">
     {% for e in loan.entries|reverse %}
     {% set rev = e.id in reversed_ids %}
@@ -165,6 +170,7 @@
       <div style="min-width:0">
         <strong>{{ e.type|replace("_", " ")|title }}{% if e.new_rate is not none %} → {{ e.new_rate|pct }}{% endif %}{% if rev %} <span class="tag gray">reversed</span>{% endif %}</strong>
         <small>{{ e.entry_date|dmy }} · #{{ e.id }}{% if e.payment_mode and e.type in ("PAYMENT", "DISBURSE", "TOPUP") %} · {{ e.payment_mode }}{% endif %}{% if e.reverses_id %} · reverses #{{ e.reverses_id }}{% endif %}{% if e.reference %} · {{ e.reference }}{% endif %}{% if e.note %} · {{ e.note }}{% endif %}</small>
+        {% if rcpts.get(e.id) %}{% set rc = rcpts[e.id] %}<a class="rcpt" href="/receipts/{{ rc.id }}">{{ icon("file") }} {{ rc.number }}{% if rc.cancelled_at %} (cancelled){% endif %}</a>{% endif %}
         {% if allocs[e.id] %}<div class="alloc">{% for a in allocs[e.id] %}{{ a.bucket|lower }} {{ a.amount_paise|inr }}{{ " · " if not loop.last }}{% endfor %}</div>{% endif %}
       </div>
       <div class="right">{% if e.amount_paise %}<b class="num">{{ e.amount_paise|inr }}</b>{% endif %}

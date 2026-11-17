@@ -1,5 +1,4 @@
 """Receipt helpers (Phase 10). Pure: no database."""
-from datetime import date as D
 
 import pytest
 

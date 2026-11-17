@@ -8,7 +8,7 @@ import secrets
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Iterator
@@ -76,6 +76,23 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             entity_id: int | None = None, actor: str | None = None, **detail) -> None:
         svc.audit(s, actor or request.session.get("user") or "unknown", action, entity, entity_id,
                   ip=request.client.host if request.client else None, **detail)
+
+    def receipt_of(s: Session, entry_id: int):
+        return s.scalar(select(m.Receipt).where(m.Receipt.ledger_entry_id == entry_id))
+
+    def issuer_for(book: str) -> dict:
+        name = (settings.receipt_business_name if book == "BUSINESS" else "") or settings.receipt_name
+        return {"name": name, "details": settings.receipt_details}
+
+    def receipt_json(r) -> dict:
+        return {k: (str(v) if isinstance(v, (date, datetime)) else v) for k, v in {
+            "id": r.id, "number": r.number, "loan_id": r.loan_id, "party": r.loan.party.name,
+            "ledger_entry_id": r.ledger_entry_id, "issued_on": r.issued_on, "payment_date": r.payment_date,
+            "amount_paise": r.amount_paise, "penalty_paise": r.penalty_paise, "interest_paise": r.interest_paise,
+            "principal_paise": r.principal_paise, "credit_paise": r.credit_paise,
+            "principal_left_paise": r.principal_left_paise, "interest_left_paise": r.interest_left_paise,
+            "payment_mode": r.payment_mode, "reference": r.reference,
+            "cancelled": r.cancelled_at is not None, "cancel_reason": r.cancel_reason}.items()}
 
     def user(request: Request) -> str:
         name = request.session.get("user")
@@ -334,8 +351,13 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                 next_date=res.projected_due.due_date if res.projected_due else None,
                 promise_paise=pending.short_paise if pending else 0,
                 promise_date=pend_p.promised_date if pend_p else None))
+        rcpts = {r.ledger_entry_id: r for r in svc.receipts(s, loan_id=loan_id)}
+        missing = len(svc.payments_without_receipt(s, loan_id)) if loan.direction == "GIVEN" else 0
+        live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else res.loan_status
+        can_close = loan.direction == "GIVEN" and live_status in ("CLOSED", "SETTLED")
         return render(request, "loan.html", loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
-                      links=links, others=others, acts=acts, proms=proms, wa=wa)
+                      links=links, others=others, acts=acts, proms=proms, wa=wa, rcpts=rcpts,
+                      missing_receipts=missing, can_close=can_close)
 
     @app.post("/loans/{loan_id}/contacts", dependencies=[Depends(check_csrf)])
     def contact_create(loan_id: int, request: Request, kind: str = Form("CALL"), outcome: str = Form("REACHED"),
@@ -387,6 +409,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
                               for a in res.allocations if a.entry_id == e.id)
             msg = f"Payment of {fmt.inr(e.amount_paise)} recorded: {split or 'held as credit'}."
+            rc = receipt_of(s, e.id)
+            if rc:
+                msg += f" Receipt {rc.number} issued."
         return back(request, referer(request, f"/loans/{loan_id}"), flash=msg)
 
     @app.post("/entries/{entry_id}/reverse", dependencies=[Depends(check_csrf)])
@@ -429,8 +454,10 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             amount_paise=e.amount_paise, entry_date=e.entry_date, via="quick")
         split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
                           for a in res.allocations if a.entry_id == e.id)
+        rc = receipt_of(s, e.id)
         return back(request, "/quick", flash=f"Saved {fmt.inr(e.amount_paise)} on loan #{loan_id}: "
-                                              f"{split or 'held as credit'}.")
+                                              f"{split or 'held as credit'}."
+                                              + (f" Receipt {rc.number} issued." if rc else ""))
 
     @app.get("/funding", response_class=HTMLResponse)
     def funding_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -491,6 +518,40 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         res = svc.compute_loan(loan, today())
         reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
         return render(request, "statement.html", loan=loan, r=res, reversed_ids=reversed_ids)
+
+    @app.get("/receipts", response_class=HTMLResponse)
+    def receipts_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
+        return render(request, "receipts.html", receipts=svc.receipts(s, q=q), q=q,
+                      missing=len(svc.payments_without_receipt(s)))
+
+    @app.post("/receipts/backfill", dependencies=[Depends(check_csrf)])
+    def receipts_backfill(request: Request, loan_id: str = Form(""), _: str = Depends(user),
+                          s: Session = Depends(db)):
+        made = svc.issue_missing_receipts(s, today(), int(loan_id) if loan_id.isdigit() else None)
+        if made:
+            log(request, s, "RECEIPTS_ISSUED", "receipt", made[0].id, count=len(made),
+                first=made[0].number, last=made[-1].number)
+        return back(request, referer(request, "/receipts"), flash=f"{len(made)} receipt(s) issued for older payments."
+                    if made else "Every payment already has a receipt.")
+
+    @app.get("/receipts/{receipt_id}", response_class=HTMLResponse)
+    def receipt_page(receipt_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        from loan_tracker.collections import wa_link
+        from loan_tracker.receipts import amount_in_words
+        r = svc.get_receipt(s, receipt_id)
+        text = (f"Receipt {r.number}: received {fmt.inr(r.amount_paise)} on {fmt.dmy(r.payment_date)} "
+                f"for loan LN-{r.loan_id}"
+                + (f" (interest {fmt.inr(r.interest_paise)}" + (f", principal {fmt.inr(r.principal_paise)}"
+                                                               if r.principal_paise else "") + ")"
+                   if r.interest_paise or r.principal_paise else "")
+                + f". Principal outstanding {fmt.inr(r.principal_left_paise)}. Thank you.")
+        return render(request, "receipt.html", r=r, words=amount_in_words(r.amount_paise),
+                      issuer=issuer_for(r.loan.book), wa=None if r.cancelled_at else wa_link(r.loan.party.phone, text))
+
+    @app.get("/loans/{loan_id}/closure", response_class=HTMLResponse)
+    def closure_page(loan_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
+        c = reports.closure_summary(s, loan_id, today())
+        return render(request, "closure.html", c=c, loan=c.loan, issuer=issuer_for(c.loan.book))
 
     @app.get("/export.csv")
     def export(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -613,6 +674,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def api_docs(_: str = Depends(user)):
         from fastapi.openapi.docs import get_swagger_ui_html
         return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Loan Tracker API")
+
+    @app.get("/api/receipts")
+    def api_receipts(loan_id: int | None = None, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
+        return [receipt_json(r) for r in svc.receipts(s, loan_id=loan_id, q=q)]
+
+    @app.get("/api/receipts/{receipt_id}")
+    def api_receipt(receipt_id: int, _: str = Depends(user), s: Session = Depends(db)):
+        from loan_tracker.receipts import amount_in_words
+        r = svc.get_receipt(s, receipt_id)
+        return receipt_json(r) | {"amount_in_words": amount_in_words(r.amount_paise)}
 
     @app.get("/api/collections")
     def api_collections(request: Request, _: str = Depends(user), s: Session = Depends(db)):

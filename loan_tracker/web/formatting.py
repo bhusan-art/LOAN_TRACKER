@@ -105,6 +105,7 @@ ACTION_LABELS = {
     "USER_RESET": ("Login reset", "orange"),
     "CONTACT_LOGGED": ("Contact logged", "purple"), "PROMISE_MADE": ("Promise made", "purple"),
     "PROMISE_CANCELLED": ("Promise cancelled", "orange"),
+    "RECEIPTS_ISSUED": ("Receipts issued", "purple"),
 }
 
 KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}

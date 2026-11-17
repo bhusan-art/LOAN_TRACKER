@@ -65,7 +65,14 @@
   payments, wa.me links, reminder text. Collections page, loan-page contact form +
   WhatsApp button, /api contacts/promises, FOLLOW UP digest section. 147 tests.
 
+- Review (after 9): API docs behind login + test that every route needs login;
+  loan row lock (FOR UPDATE) on post/reverse/status; lint clean.
+- Phase 10 (receipts): migration 0004 receipt (snapshot, cancel-only) + atomic
+  per-year counter RCPT-YYYY-NNNN. Auto-issued per PAYMENT on given loans,
+  cancelled on reversal, backfill for older payments. Printable receipt (amount in
+  words, WhatsApp share), receipts list, no-dues certificate (CLOSED/SETTLED).
+  Issuer from RECEIPT_NAME / RECEIPT_BUSINESS_NAME / RECEIPT_DETAILS. 172 tests.
+
 ## Next step
-V2 plan: Phase 10 receipts + closure certificate, 11 cash accounts + shortfall,
-12 what-if simulator.
+V2 plan: Phase 11 cash accounts + shortfall warnings, 12 what-if simulator.
 

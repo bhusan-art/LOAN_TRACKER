@@ -29,6 +29,10 @@ class Settings:
     secure_cookies: bool = field(default_factory=lambda: _env("SECURE_COOKIES", "0") == "1")
     reminder_days_before: int = field(default_factory=lambda: int(_env("REMINDER_DAYS_BEFORE", "3")))
     concentration_flag_pct: int = field(default_factory=lambda: int(_env("CONCENTRATION_FLAG_PCT", "25")))
+    # receipts and closure certificates (Phase 10): who issues them
+    receipt_name: str = field(default_factory=lambda: _env("RECEIPT_NAME"))
+    receipt_business_name: str = field(default_factory=lambda: _env("RECEIPT_BUSINESS_NAME"))
+    receipt_details: str = field(default_factory=lambda: _env("RECEIPT_DETAILS"))
     telegram_bot_token: str = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str = field(default_factory=lambda: _env("TELEGRAM_CHAT_ID"))
     smtp_host: str = field(default_factory=lambda: _env("SMTP_HOST"))
