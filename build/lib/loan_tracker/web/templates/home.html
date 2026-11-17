@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_due_list.html" import due_list %}
+{% block content %}
+<section class="metrics">
+  <div class="metric"><span>Lent out</span><strong>{{ d.lent_out_paise|inr(decimals=False) }}</strong></div>
+  <div class="metric"><span>Borrowed</span><strong>{{ d.borrowed_paise|inr(decimals=False) }}</strong></div>
+  <div class="metric"><span>Own capital deployed</span><strong>{{ d.own_capital_deployed_paise|inr(decimals=False) }}</strong></div>
+  <div class="metric {{ 'neg' if d.net_interest_income.month < 0 }}"><span>Net interest, this month</span>
+    <strong>{{ d.net_interest_income.month|inr(decimals=False) }}</strong></div>
+</section>
+
+{% if d.warning_text %}
+<section class="card warn">
+  <h2>Warnings</h2>
+  <ul>{% for w in d.warning_text %}<li>{{ w }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>To pay <small>(next 7 days and overdue)</small></h2>
+  {{ due_list(d.pay_soon) }}
+</section>
+<section class="card">
+  <h2>To collect <small>(next 7 days and overdue)</small></h2>
+  {{ due_list(d.collect_soon) }}
+</section>
+
+<section class="card">
+  <h2>Interest</h2>
+  <table class="num">
+    <tr><th></th><th>Month</th><th>FY</th><th>Lifetime</th></tr>
+    <tr><td>Earned</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.interest_earned[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+    <tr><td>Cost</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.interest_cost[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+    <tr class="total"><td>Net</td>{% for k in ["month","fy","lifetime"] %}<td>{{ d.net_interest_income[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+  </table>
+  <p class="muted">Collected {{ d.collected_paise|inr(decimals=False) }} · pending {{ d.pending_paise|inr(decimals=False) }}
+    · yield (last 12 months) {{ "%.2f"|format(d.effective_yield_bps / 100) }}%
+    {% if d.idle_cost_paise_per_cycle %}· idle borrowed money costs {{ d.idle_cost_paise_per_cycle|inr(decimals=False) }}/month{% endif %}</p>
+</section>
+
+<section class="card">
+  <h2>Overdue <small>{{ d.overdue_count }} dues · {{ d.overdue_paise|inr(decimals=False) }}</small></h2>
+  <table class="num">
+    <tr><th>0–30 days</th><th>31–60</th><th>61–90</th><th>90+</th></tr>
+    <tr>{% for k in ["0_30","31_60","61_90","90_plus"] %}<td>{{ d.aging[k]|inr(decimals=False) }}</td>{% endfor %}</tr>
+  </table>
+</section>
+
+{% if d.concentration %}
+<section class="card">
+  <h2>Exposure by borrower</h2>
+  <ul class="plain">{% for name, amt, share, flagged in d.concentration %}
+    <li class="{{ 'flag' if flagged }}">{{ name }} · {{ amt|inr(decimals=False) }} · {{ share }}%{% if flagged %} ⚠{% endif %}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+<p class="muted">Daily job: {% if last_job %}last run {{ last_job.run_date|dmy }} {{ "✓" if last_job.ok else "✗ failed" }}{% else %}not run yet{% endif %}</p>
+{% endblock %}

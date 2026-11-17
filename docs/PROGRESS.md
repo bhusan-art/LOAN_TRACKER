@@ -6,11 +6,11 @@
 | 0 | Setup: repo, docs, CLAUDE.md, docker-compose (Postgres), venv | done |
 | 1 | Design: schema, engine interfaces, API + screen list (docs only, no app code) | done |
 | 2 | Calculation engine + tests (Examples A-C, edge cases) | done |
-| 3 | DB layer: SQLAlchemy models, Alembic migrations, repositories | not started |
-| 4 | API: FastAPI endpoints, auth + 2FA, book filter | not started |
-| 5 | Daily job + Telegram/email notifications | not started |
-| 6 | Frontend PWA: 6 screens | not started |
-| 7 | Deploy: Dockerfile, reverse proxy, backups | not started |
+| 3 | DB layer: SQLAlchemy models, Alembic migrations, repositories | done |
+| 4 | API: FastAPI endpoints, auth + 2FA, book filter | done |
+| 5 | Daily job + Telegram/email notifications | done |
+| 6 | Frontend PWA: 6 screens | done |
+| 7 | Deploy: Dockerfile, reverse proxy, backups | done |
 
 ## Log
 - Phase 0: setup + docs kit (01-06), CLAUDE.md, docker-compose, venv.
@@ -45,5 +45,15 @@
   Spec fix: mid-cycle payoff on 15 Apr = 10_693_333 (3 dues realized).
   74 tests incl. hypothesis properties + purity check. Docs 04/05/engine.md updated.
 
+- Phase 3: migrations (Alembic running db/sql/0001_initial.sql; + app_user, job_run),
+  ORM models, services.py (append-only writes, cache rebuild in the same transaction),
+  reports.py. Design change: due/allocation are caches (a reversal can change later dues).
+- Phase 4-6: FastAPI app with HTML pages + /api JSON; scrypt passwords + TOTP 2FA
+  (stdlib); daily job with grouped digest, never-muted payables, idempotent re-runs;
+  phone layout checked with screenshots. tzdata added (Windows has no tz database).
+- Phase 7: Dockerfile, compose (db, app, scheduler), backup.sh/.ps1, Caddyfile, README.
+  100 tests (74 engine + 26 database/web/job).
+
 ## Next step
-Phase 3.1: SQLAlchemy models from docs/design/schema.sql + Alembic.
+Owner: follow README section 1 on the PC, create the login, add real loans.
+Later (v2): EMI/compound interest, second user, borrower SMS/WhatsApp, attachments.

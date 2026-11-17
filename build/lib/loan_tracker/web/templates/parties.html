@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}People{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>People</h1>
+  <form class="row"><input name="q" value="{{ q }}" placeholder="Search name"><button class="secondary">Search</button></form>
+  <ul class="dues">
+    {% for p in rows %}
+    <li><a href="/parties/{{ p.id }}"><b>{{ p.name }}</b></a>
+      <span>{{ p.net_position_paise|inr(decimals=False) }}</span>
+      <span class="muted">{{ p.loan_count }} loan{{ "s" if p.loan_count != 1 }}{% if p.phone %} · {{ p.phone }}{% endif %}</span></li>
+    {% else %}<li class="muted">Nobody yet.</li>{% endfor %}
+  </ul>
+  <p class="muted">Amount = what they owe you minus what you owe them (principal).</p>
+</section>
+<section class="card">
+  <h2>Add a person</h2>
+  <form method="post" action="/parties" class="stack">
+    <label>Name <input name="name" required></label>
+    <label>Phone <input name="phone" inputmode="tel"></label>
+    <label>Address <input name="address"></label>
+    <label>Notes <input name="notes"></label>
+    <button>Add</button>
+  </form>
+</section>
+{% endblock %}

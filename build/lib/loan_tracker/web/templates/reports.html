@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Interest by financial year</h1>
+  <p class="muted">Interest is counted when it falls due. Business and personal are kept apart for tax; confirm treatment with your CA.</p>
+  <div class="scroll"><table class="num">
+    <tr><th>Year</th><th>Book</th><th>Earned</th><th>Received</th><th>Cost</th><th>Paid</th><th>Net</th></tr>
+    {% for r in fy %}<tr><td class="left">{{ r.fy }}</td><td>{{ r.book|lower }}</td><td>{{ r.earned|inr }}</td>
+      <td>{{ r.received|inr }}</td><td>{{ r.paid|inr }}</td><td>{{ r.paid_out|inr }}</td><td><b>{{ r.net|inr }}</b></td></tr>
+    {% else %}<tr><td colspan="7" class="muted">No interest yet.</td></tr>{% endfor %}
+  </table></div>
+</section>
+<section class="card">
+  <h2>Overdue</h2>
+  <table class="num">
+    <tr><th>Who</th><th>Due date</th><th>Left</th><th>Days late</th></tr>
+    {% for i in overdue %}<tr><td class="left"><a href="/loans/{{ i.loan_id }}">{{ "←" if i.direction == "GIVEN" else "→" }} {{ i.party }}</a></td>
+      <td>{{ i.due_date|dmy }}</td><td>{{ i.amount_paise|inr }}</td><td>{{ i.overdue_days }}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">Nothing overdue.</td></tr>{% endfor %}
+  </table>
+</section>
+<section class="card">
+  <h2>Cross-book funding</h2>
+  <ul class="plain">{% for c in cross %}<li>{{ c.link.amount_paise|inr(decimals=False) }} borrowed ({{ c.taken.book|lower }}, loan #{{ c.taken.id }})
+    lent in {{ c.given.book|lower }} (loan #{{ c.given.id }})</li>{% else %}<li class="muted">None.</li>{% endfor %}</ul>
+</section>
+<section class="card"><p><a class="button secondary" href="/export.csv">Download everything (CSV, opens in Excel)</a></p></section>
+{% endblock %}

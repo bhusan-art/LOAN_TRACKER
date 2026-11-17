@@ -15,6 +15,7 @@ are engine outputs, not stored columns.
 | funding_link | id, taken_loan_id, given_loan_id, amount_paise, link_date | Which borrowed money funded which given loan. Many-to-many. Unlinked part of a GIVEN loan = own capital |
 | reminder_log | id, loan_id, due_date, kind, channel, sent_on, sent_at | Prevents duplicate reminders; dedupe UNIQUE (loan_id, due_date, kind, channel, sent_on). Keyed by loan + due_date so projected dues (no row yet) can be reminded |
 
+Implementation note: `due` and `allocation` are caches rebuilt from the ledger on every change (services.recompute_loan); app_user and job_run were added in Phase 3.
 Optional later: audit_log (when second user exists), attachment (promissory notes, cheque photos).
 Indexes: ledger_entry(loan_id, entry_date), due(due_date), loan(book, direction,
 status), reminder_log(loan_id, due_date, sent_on).

@@ -16,16 +16,18 @@ payments, dues, overdue amounts, net interest income, and sends reminders.
 - docs/plans/           -> approved plan per phase
 
 ## Stack
-Python 3.12, FastAPI, PostgreSQL 16, SQLAlchemy 2 + Alembic, pytest + hypothesis,
-cron job, Telegram Bot API, PWA frontend (HTMX/Jinja), Docker Compose.
+Python 3.12, FastAPI + Jinja (server-rendered PWA), PostgreSQL 16, SQLAlchemy 2 + Alembic,
+pytest + hypothesis, Telegram Bot API / SMTP, Docker Compose (db, app, scheduler).
 
 ## Layout
 loan_tracker/engine/   pure calculation engine (NO db, NO I/O, NO datetime.now())
-loan_tracker/db/       models, migrations, repositories
-loan_tracker/api/      FastAPI routes
+loan_tracker/db/       sql/0001_initial.sql (schema source of truth), migrations, models
+loan_tracker/services.py  the ONLY writer: appends ledger rows, rebuilds due/allocation caches
+loan_tracker/reports.py   dashboard, cash calendar, FY report, CSV
+loan_tracker/web/      FastAPI app: HTML pages + /api JSON, templates, static
 loan_tracker/jobs/     daily job, notifications
-loan_tracker/web/      frontend
-tests/                 pytest
+loan_tracker/cli.py    migrate, create-user, run-job, scheduler, demo-data
+tests/engine/, tests/db/  (db tests need TEST_DATABASE_URL; see README)
 
 ## Non-negotiable money rules
 1. Money = integer paise (int). Never float. Rates = Decimal.
@@ -33,6 +35,8 @@ tests/                 pytest
 3. Payment waterfall: penalty -> oldest interest due -> principal.
 4. Engine is pure: compute(terms, entries, as_of_date) -> results. Same input, same output.
 5. Every loan has direction (GIVEN/TAKEN) and book (BUSINESS/PERSONAL). Same engine for both.
+6. `due` and `allocation` tables are caches rebuilt by services.recompute_loan(); never edit them by hand.
+7. Engine tests' expected numbers are authoritative: fix code, never the expected value.
 
 ## Commands
 - Tests: `pytest -q -x --tb=short` (always this form, keep output small)

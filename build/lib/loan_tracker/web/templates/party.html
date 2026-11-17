@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ party.name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ party.name }}</h1>
+  <p class="muted">{{ party.phone or "" }}{% if party.address %} · {{ party.address }}{% endif %}</p>
+  <section class="metrics">
+    <div class="metric"><span>They owe you</span><strong>{{ summary.lent|inr(decimals=False) }}</strong></div>
+    <div class="metric"><span>You owe them</span><strong>{{ summary.taken|inr(decimals=False) }}</strong></div>
+    <div class="metric"><span>Net</span><strong>{{ summary.net|inr(decimals=False) }}</strong></div>
+    <div class="metric"><span>Paid on time</span><strong>{{ "%d%%"|format(summary.on_time_pct) if summary.on_time_pct is not none else "—" }}</strong></div>
+  </section>
+  <p><a class="button" href="/loans/new?direction=GIVEN&party_id={{ party.id }}">+ Lend</a>
+     <a class="button secondary" href="/loans/new?direction=TAKEN&party_id={{ party.id }}">+ Borrow</a></p>
+</section>
+<section class="card">
+  <h2>Loans</h2>
+  <div class="scroll"><table class="num">
+    <tr><th>Loan</th><th>Principal left</th><th>Payoff today</th><th>Status</th></tr>
+    {% for r in rows %}<tr class="st-{{ r.loan.status|lower }}">
+      <td class="left"><a href="/loans/{{ r.loan.id }}">{{ "Lent" if r.loan.direction == "GIVEN" else "Borrowed" }} {{ r.loan.start_date|dmy }}</a>
+        <span class="tag">{{ "BIZ" if r.loan.book == "BUSINESS" else "PER" }}</span></td>
+      <td>{{ r.result.balances.principal_outstanding_paise|inr(decimals=False) }}</td>
+      <td>{{ r.result.balances.payoff_today_paise|inr(decimals=False) }}</td>
+      <td>{{ r.loan.status|lower }}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No loans in this book.</td></tr>{% endfor %}
+  </table></div>
+</section>
+<section class="card">
+  <details><summary>Edit details</summary>
+  <form method="post" action="/parties/{{ party.id }}" class="stack">
+    {% for f, label in [("name","Name"),("phone","Phone"),("address","Address"),("id_proof_ref","ID proof reference"),("guarantor","Guarantor"),("risk_tag","Risk tag"),("notes","Notes")] %}
+    <label>{{ label }} <input name="{{ f }}" value="{{ party[f] or '' }}" {{ "required" if f == "name" }}></label>{% endfor %}
+    <button class="secondary">Save</button>
+  </form></details>
+</section>
+{% endblock %}

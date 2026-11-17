@@ -5,6 +5,7 @@
                              the authenticator-app setup key); re-run to reset
   run-job [--date YYYY-MM-DD] [--dry-run]
                              the daily job (cron); --dry-run prints the digest
+  scheduler [--at HH:MM]     run the daily job every day (docker service)
   demo-data                  load the worked examples A-C (for trying the app)
 """
 import argparse
@@ -65,6 +66,34 @@ def cmd_run_job(args) -> None:
         sys.exit(1)
 
 
+def cmd_scheduler(args) -> None:
+    """Run forever: the daily job once a day at JOB_TIME (owner's timezone).
+    Used by the `scheduler` service in docker-compose (no cron needed, works
+    the same on Windows and Linux). Catches up at start if today's run is missing."""
+    import time
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+    settings = get_settings()
+    tz = ZoneInfo(settings.timezone)
+    hh, mm = (int(x) for x in (args.at or "08:00").split(":"))
+    print(f"scheduler: daily job at {hh:02d}:{mm:02d} {settings.timezone}", flush=True)
+    last_attempt = 0.0
+    while True:
+        now = dt.now(tz)
+        with session_scope() as s:
+            done = s.scalar(select(m.JobRun.id).where(m.JobRun.run_date == now.date(), m.JobRun.ok.is_(True)))
+        due = (now.hour, now.minute) >= (hh, mm)
+        if not done and due and time.time() - last_attempt >= 1800:  # retry failures every 30 min
+            last_attempt = time.time()
+            try:
+                cmd_run_job(argparse.Namespace(date=now.date().isoformat(), dry_run=False))
+            except SystemExit:
+                print("scheduler: run finished with errors; will retry in 30 minutes", flush=True)
+            except Exception as exc:  # already recorded in job_run by cmd_run_job
+                print(f"scheduler: run failed: {exc!r}; will retry in 30 minutes", flush=True)
+        time.sleep(60)
+
+
 def cmd_demo_data(args) -> None:
     """Examples A-C from docs/05-examples.md, dated 2026."""
     t = today()
@@ -108,8 +137,13 @@ def main(argv=None) -> None:
     j = sub.add_parser("run-job")
     j.add_argument("--date")
     j.add_argument("--dry-run", action="store_true")
+    sc = sub.add_parser("scheduler")
+    sc.add_argument("--at", default=None, help="time of day, default 08:00 (or JOB_TIME)")
     sub.add_parser("demo-data")
     args = p.parse_args(argv)
+    if args.cmd == "scheduler" and not args.at:
+        import os
+        args.at = os.environ.get("JOB_TIME", "08:00")
     if args.cmd == "migrate":
         upgrade()
         print("database is up to date")
@@ -117,6 +151,8 @@ def main(argv=None) -> None:
         cmd_create_user(args)
     elif args.cmd == "run-job":
         cmd_run_job(args)
+    elif args.cmd == "scheduler":
+        cmd_scheduler(args)
     elif args.cmd == "demo-data":
         cmd_demo_data(args)
 

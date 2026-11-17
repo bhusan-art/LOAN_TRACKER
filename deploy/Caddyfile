@@ -1,0 +1,19 @@
+# HTTPS in front of the app (https://caddyserver.com). Caddy gets and renews the
+# certificate automatically. Replace the domain, point its DNS at the server,
+# and set SECURE_COOKIES=1 in .env.
+#
+#   sudo apt install caddy && sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# No public domain? Use Tailscale instead: install it on the server and your
+# phone, and open http://<server-tailscale-name>:8000 (private network, nothing exposed).
+
+loans.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8000
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+}

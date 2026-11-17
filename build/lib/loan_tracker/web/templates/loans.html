@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Loans{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="row between"><h1>Loans</h1>
+    <span><a class="button" href="/loans/new?direction=GIVEN">+ Lend</a> <a class="button secondary" href="/loans/new?direction=TAKEN">+ Borrow</a></span></div>
+  <form class="row filters">
+    <select name="direction" onchange="this.form.submit()">
+      <option value="">Both directions</option>
+      <option value="GIVEN" {{ "selected" if direction == "GIVEN" }}>Lent (given)</option>
+      <option value="TAKEN" {{ "selected" if direction == "TAKEN" }}>Borrowed (taken)</option></select>
+    <select name="status" onchange="this.form.submit()">
+      <option value="">Any status</option>
+      {% for st in ["ACTIVE","OVERDUE","MATURED","CLOSED","SETTLED","WRITTEN_OFF"] %}
+      <option {{ "selected" if status == st }}>{{ st }}</option>{% endfor %}</select>
+  </form>
+  <div class="scroll"><table class="num">
+    <tr><th>Who</th><th>Principal left</th><th>Payoff today</th><th>Next due</th><th>Status</th></tr>
+    {% for r in rows %}
+    <tr class="st-{{ r.loan.status|lower }}">
+      <td class="left"><a href="/loans/{{ r.loan.id }}">{{ "←" if r.loan.direction == "GIVEN" else "→" }} {{ r.loan.party.name }}</a>
+        <span class="tag">{{ "BIZ" if r.loan.book == "BUSINESS" else "PER" }}</span></td>
+      <td>{{ r.result.balances.principal_outstanding_paise|inr(decimals=False) }}</td>
+      <td>{{ r.result.balances.payoff_today_paise|inr(decimals=False) }}</td>
+      <td>{{ r.result.projected_due.due_date|dmy if r.result.projected_due else "—" }}</td>
+      <td>{{ r.loan.status|lower }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">No loans yet.</td></tr>{% endfor %}
+  </table></div>
+</section>
+{% endblock %}

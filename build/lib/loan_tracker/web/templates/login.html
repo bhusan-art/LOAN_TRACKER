@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Log in · Loan Tracker{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Loan Tracker</h1>
+  <form method="post" action="/login" class="stack">
+    <label>Username <input name="username" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <label>6-digit code from your authenticator app
+      <input name="code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code"></label>
+    <button>Log in</button>
+  </form>
+</section>
+{% endblock %}

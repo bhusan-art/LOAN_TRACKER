@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1f4e79">
+  <title>{% block title %}Loan Tracker{% endblock %}</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="book-{{ book }}">
+{% if user %}
+<header class="top">
+  <a class="brand" href="/">Loans</a>
+  <nav class="book-toggle" aria-label="Book">
+    {% for key, label in [("all", "All"), ("business", "Business"), ("personal", "Personal")] %}
+      <a href="/book/{{ key }}" class="{{ 'on' if book == key }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+</header>
+<nav class="tabs">
+  <a href="/">Home</a><a href="/quick">+ Payment</a><a href="/loans">Loans</a>
+  <a href="/parties">People</a><a href="/calendar">Calendar</a><a href="/reports">Reports</a>
+</nav>
+{% endif %}
+<main>
+  {% if flash %}<p class="flash ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="flash err">{{ error }}</p>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+{% if user %}<footer><a href="/funding">Funding links</a> · <a href="/export.csv">Export CSV</a> · <a href="/logout">Log out</a></footer>{% endif %}
+<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 [project]
 name = "loan-tracker"
-version = "0.1.0"
+version = "1.0.0"
 description = "Personal loan management: exact-money ledger engine, dashboards, and reminders."
 requires-python = ">=3.12"
 dependencies = [
@@ -8,13 +8,18 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
-    "pydantic>=2.6",
+    "alembic>=1.13",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "hypothesis>=6",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
@@ -27,3 +32,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["loan_tracker*"]
+
+[tool.setuptools.package-data]
+loan_tracker = [
+    "db/sql/*.sql",
+    "db/migrations/*.mako",
+    "web/templates/*.html",
+    "web/static/*",
+]

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}New loan{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ "Lend money" if direction == "GIVEN" else "Record money borrowed" }}</h1>
+  {% if not parties %}<p>First <a href="/parties">add the person</a>.</p>{% else %}
+  <form method="post" action="/loans" class="stack">
+    <input type="hidden" name="direction" value="{{ direction }}">
+    <label>{{ "Borrower" if direction == "GIVEN" else "Lender" }}
+      <select name="party_id" required><option value="">Choose…</option>
+        {% for p in parties %}<option value="{{ p.id }}" {{ "selected" if p.id == party_id }}>{{ p.name }}</option>{% endfor %}</select></label>
+    <fieldset class="row"><legend>Book (required)</legend>
+      <label class="radio"><input type="radio" name="book" value="BUSINESS" required> Business</label>
+      <label class="radio"><input type="radio" name="book" value="PERSONAL"> Personal</label></fieldset>
+    <label>Amount (₹) <input name="principal" inputmode="decimal" required placeholder="1,00,000"></label>
+    <div class="row">
+      <label>Interest rate (%) <input name="rate" inputmode="decimal" required placeholder="2"></label>
+      <label>per <select name="rate_unit"><option value="PER_MONTH">month</option><option value="PER_YEAR">year</option></select></label>
+    </div>
+    <div class="row">
+      <label>Start date <input type="date" name="start_date" value="{{ today.isoformat() }}"></label>
+      <label>Due day of month <input name="due_day" type="number" min="1" max="31" placeholder="same as start"></label>
+    </div>
+    <div class="row">
+      <label>Interest paid <select name="interest_cycle">
+        <option value="MONTHLY">monthly</option><option value="QUARTERLY">quarterly</option>
+        <option value="AT_MATURITY">at maturity</option></select></label>
+      <label>Grace days <input name="grace_days" type="number" min="0" value="3"></label>
+    </div>
+    <label>Maturity date (optional) <input type="date" name="maturity_date"></label>
+    <label>Paid out by <select name="payment_mode"><option>CASH</option><option>UPI</option><option>BANK</option></select></label>
+    <label>Purpose <input name="purpose"></label>
+    <label>Collateral <input name="collateral"></label>
+    <button>Create loan</button>
+  </form>
+  <p class="muted">Tip: when lending borrowed money, set the borrower's due day a few days before your own payment day.</p>
+  {% endif %}
+</section>
+{% endblock %}
