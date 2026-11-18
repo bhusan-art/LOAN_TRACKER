@@ -426,7 +426,7 @@ def store_document(s: Session, vault: DocVault, *, data: bytes, file_name: str, 
                      key_id=key_id(vault.current), uploaded_by=actor or "unknown")
     os.makedirs(vault.directory, mode=0o700, exist_ok=True)
     tmp = vault.path(uuid) + ".tmp"
-    with open(tmp, "wb") as f:
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:   # owner-only
         f.write(seal(vault.current, data, f"document:{uuid}".encode()))
         f.flush()
         os.fsync(f.fileno())

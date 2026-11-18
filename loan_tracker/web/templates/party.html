@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_docs.html" import documents_card with context %}
 {% from "_ui.html" import icon, stat, loan_tag, dir_tag, book_tag, empty %}
 {% block title %}{{ party.name }}{% endblock %}
 {% block crumb %}{{ party.name }}{% endblock %}
@@ -46,4 +47,5 @@
     </form>
   </div>
 </div>
+<div style="margin-top:19px">{{ documents_card(docs, party_id=party.id, vault_problem=vault_problem) }}</div>
 {% endblock %}

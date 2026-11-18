@@ -163,3 +163,147 @@ class AuditLog(Base):
     entity_id: Mapped[int | None] = mapped_column(ID)
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
     ip: Mapped[str | None] = mapped_column(Text)
+
+
+class CollectionActivity(Base):
+    """Append-only (DB trigger). Written only through services.log_contact()."""
+    __tablename__ = "collection_activity"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    contact_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(Text)
+    outcome: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    next_follow_up: Mapped[date | None] = mapped_column(Date)
+    actor: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class PaymentPromise(Base):
+    """Never money. Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "payment_promise"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    activity_id: Mapped[int | None] = mapped_column(ID, ForeignKey("collection_activity.id"))
+    made_on: Mapped[date] = mapped_column(Date)
+    promised_date: Mapped[date] = mapped_column(Date)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class Receipt(Base):
+    """Snapshot document. Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "receipt"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    number: Mapped[str] = mapped_column(Text)
+    year: Mapped[int] = mapped_column(Integer)
+    seq: Mapped[int] = mapped_column(Integer)
+    ledger_entry_id: Mapped[int] = mapped_column(ID, ForeignKey("ledger_entry.id"))
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    issued_on: Mapped[date] = mapped_column(Date)
+    payment_date: Mapped[date] = mapped_column(Date)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    penalty_paise: Mapped[int] = mapped_column(ID, default=0)
+    interest_paise: Mapped[int] = mapped_column(ID, default=0)
+    principal_paise: Mapped[int] = mapped_column(ID, default=0)
+    credit_paise: Mapped[int] = mapped_column(ID, default=0)
+    principal_left_paise: Mapped[int] = mapped_column(ID)
+    interest_left_paise: Mapped[int] = mapped_column(ID)
+    payment_mode: Mapped[str | None] = mapped_column(Text)
+    reference: Mapped[str | None] = mapped_column(Text)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    loan: Mapped["Loan"] = relationship(lazy="joined")
+
+
+class CashAccount(Base):
+    __tablename__ = "cash_account"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    book: Mapped[str] = mapped_column(BookEnum)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class CashBalance(Base):
+    """Append-only (DB trigger): each balance update is a new row."""
+    __tablename__ = "cash_balance"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    as_of: Mapped[date] = mapped_column(Date)
+    balance_paise: Mapped[int] = mapped_column(ID)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class PlannedCashItem(Base):
+    """Only change allowed: cancel once (DB trigger)."""
+    __tablename__ = "planned_cash_item"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    book: Mapped[str] = mapped_column(BookEnum)
+    item_date: Mapped[date] = mapped_column(Date)
+    direction: Mapped[str] = mapped_column(Text)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    description: Mapped[str] = mapped_column(Text)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class BankImport(Base):
+    """Append-only (DB trigger): one row per uploaded statement."""
+    __tablename__ = "bank_import"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    file_name: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(Text)
+    row_count: Mapped[int] = mapped_column(Integer)
+    new_count: Mapped[int] = mapped_column(Integer)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    account: Mapped["CashAccount"] = relationship(lazy="joined")
+
+
+class BankTxn(Base):
+    """Bank figures are fixed (DB trigger); only status/ledger_entry_id/note/decided_at change."""
+    __tablename__ = "bank_txn"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    import_id: Mapped[int] = mapped_column(ID, ForeignKey("bank_import.id"))
+    account_id: Mapped[int] = mapped_column(ID, ForeignKey("cash_account.id"))
+    fingerprint: Mapped[str] = mapped_column(Text)
+    line_no: Mapped[int] = mapped_column(Integer)
+    txn_date: Mapped[date] = mapped_column(Date)
+    description: Mapped[str] = mapped_column(Text, default="")
+    reference: Mapped[str | None] = mapped_column(Text)
+    amount_paise: Mapped[int] = mapped_column(ID)
+    balance_paise: Mapped[int | None] = mapped_column(ID)
+    status: Mapped[str] = mapped_column(Text, default="NEW")
+    ledger_entry_id: Mapped[int | None] = mapped_column(ID, ForeignKey("ledger_entry.id"))
+    note: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class Document(Base):
+    """Describes an encrypted file on disk. Only change allowed: mark deleted once (DB trigger)."""
+    __tablename__ = "document"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    uuid: Mapped[str] = mapped_column(Text)
+    party_id: Mapped[int | None] = mapped_column(ID, ForeignKey("party.id"))
+    loan_id: Mapped[int | None] = mapped_column(ID, ForeignKey("loan.id"))
+    kind: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    file_name: Mapped[str] = mapped_column(Text)
+    content_type: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str] = mapped_column(Text)
+    uploaded_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_by: Mapped[str | None] = mapped_column(Text)
+    party: Mapped["Party | None"] = relationship(lazy="joined")

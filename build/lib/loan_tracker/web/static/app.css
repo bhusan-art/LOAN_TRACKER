@@ -39,3 +39,57 @@ details.more[open] summary{margin-bottom:16px}
 .tabs a{border-radius:9px;padding:10px 13px;color:var(--muted);font-weight:800;font-size:12px}
 .tabs a.active{background:var(--brandlight);color:var(--brand)}
 .listitem .right b,.listitem .right small{white-space:nowrap}
+
+/* Phase 9: collections */
+.btn.wa{background:#25d366;color:#fff;box-shadow:0 4px 10px #25d36633}
+.btn.wa.sm{padding:7px 10px}
+.promisebox{margin-top:18px;padding:16px;border:1px dashed var(--brand);border-radius:12px;background:var(--brandlight)}
+.promisebox .hint{margin-top:0}
+.chase .listitem .right{display:flex;gap:8px;align-items:center}
+.chase .right .amt{text-align:right;margin-right:6px}
+
+/* Phase 10: receipts and certificates */
+.doc{position:relative;max-width:820px;margin:0 auto;padding:36px 40px;overflow:hidden}
+.dochead{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:20px;border-bottom:2px solid var(--text);margin-bottom:22px}
+.docname{font-size:20px;font-weight:800;letter-spacing:-.02em}
+.docmeta{text-align:right}.doctitle{font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--brand);margin-bottom:6px}
+.docbody p{line-height:1.7;margin:0 0 10px}
+.docamount{font-size:34px;font-weight:800;letter-spacing:-.03em;margin:6px 0 2px}
+.docwords{font-style:italic;color:var(--muted)}
+.docsplit{margin-top:18px;gap:28px}.docsplit h3{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.docfoot{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-top:46px}
+.docfoot .sign{border-top:1px solid var(--text);padding-top:6px;min-width:200px;text-align:center;font-size:12px;font-weight:700}
+.docnote.red{color:var(--red);font-weight:700}
+.doc .stamp{position:absolute;top:44%;left:50%;transform:translate(-50%,-50%) rotate(-18deg);font-size:72px;font-weight:900;color:var(--red);opacity:.16;border:8px solid var(--red);padding:4px 26px;border-radius:12px;pointer-events:none;letter-spacing:.08em}
+tr.reversedrow td{color:var(--muted)}tr.reversedrow .num{text-decoration:line-through}
+.ledger .rcpt{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:var(--brand);margin-top:5px}.ledger .rcpt svg{width:12px;height:12px}
+@media(max-width:800px){.docfoot .sign{min-width:160px;margin-left:auto}.doc{padding:22px 18px}.dochead{flex-direction:column}.docmeta{text-align:left}.docamount{font-size:28px}}
+@page{margin:14mm}
+@media print{.doc{max-width:none;padding:0 6px;border:0}.doc .dochead{flex-direction:row}.doc .docmeta{text-align:right}.doc .docamount{font-size:32px}.doc .two.equal{grid-template-columns:1fr 1fr}.doc .stamp{opacity:.3}.docsplit{display:grid;grid-template-columns:1fr 1fr}}
+
+/* Phase 11: cash */
+form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 10px}
+form.inline input{border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:8px 10px;color:var(--text);min-width:0;flex:1 1 120px}
+.acct details.more summary{margin-top:8px}
+.sidebar{overflow-y:auto}
+.formgrid.four{grid-template-columns:repeat(4,minmax(0,1fr))}.formgrid.four .full{grid-column:1/-1}
+@media(max-width:1100px){.formgrid.four{grid-template-columns:1fr 1fr}}
+@media(max-width:800px){.formgrid.four{grid-template-columns:1fr}}
+@media(max-width:800px){.simtable th,.simtable td{padding:11px 6px;font-size:11px}.simtable td:first-child{white-space:normal}}
+
+/* Phase 13: bank import */
+.bankline{padding:16px 0;border-bottom:1px solid var(--line)}.bankline:last-child{border:0}
+.bl-head{display:flex;gap:13px;align-items:center}.bl-head .bubble{width:37px;height:37px;flex-shrink:0;border-radius:11px;display:grid;place-items:center;background:var(--brandlight);color:var(--brand)}
+.bl-head .bubble.green{background:var(--greenlight);color:var(--green)}.bl-head .bubble.red{background:var(--redlight);color:var(--red)}
+.bl-head .bubble svg{width:17px;height:17px}.bl-text{min-width:0;flex:1}.bl-text strong{display:block;font-size:12px;overflow-wrap:anywhere}
+.bl-text small{display:block;color:var(--muted);font-size:11px;margin-top:5px}.bl-head .right{text-align:right;margin-left:auto}
+.bl-actions{margin:10px 0 0 50px;display:grid;gap:8px}.bl-actions.decided{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--muted)}
+form.sugg{display:flex;gap:12px;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px}
+form.sugg.strong{border-color:var(--brand);background:var(--brandlight)}form.sugg span{min-width:0}
+form.inline select{border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:8px 10px;color:var(--text);min-width:0;flex:1 1 160px}
+label.check{display:flex;gap:8px;align-items:center;font-weight:700}
+@media(max-width:800px){.bl-actions{margin-left:0}form.sugg{flex-direction:column;align-items:stretch}}
+
+/* Phase 14: documents */
+.docs .docactions{display:flex;gap:12px;align-items:center}.linkbtn.danger{color:var(--red)}
+.docs .cardhead .tiny svg{width:12px;height:12px;vertical-align:-2px}

@@ -23,7 +23,6 @@ after it (review 2.2). Entries dated after as_of are ignored.
 """
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
 from typing import Sequence
 
 from loan_tracker.engine.accrual import (

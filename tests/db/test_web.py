@@ -470,3 +470,50 @@ def test_bank_upload_bad_file_shows_message(client):
     r = client.post("/bank/upload", data={"account_id": str(acc), "csrf_token": tok(client, "/bank")},
                     files={"file": ("photo.csv", b"\x89PNG\r\n\x1a\n...", "text/csv")}, headers={"referer": "/bank"})
     assert "could not read the statement" in r.text
+
+
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 64
+
+
+def test_documents_upload_view_delete(s, tmp_path):
+    from loan_tracker.docvault import new_key
+    s.add(m.AppUser(username="owner", password_hash=auth.hash_password("a long password"), totp_secret=SECRET))
+    s.flush()
+    maker = sessionmaker(bind=s.connection(), join_transaction_mode="create_savepoint", expire_on_commit=False)
+    c = TestClient(create_app(Settings(secret_key="test", document_key=new_key(), document_dir=str(tmp_path)),
+                              maker=maker, today_fn=lambda: D(2026, 4, 1)))
+    login(c)
+    pid = c.post("/api/parties", json={"name": "Ravi"}).json()["id"]
+    lid = c.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                     "principal_paise": 100_000, "start_date": "2026-01-01", "rate": "2"}).json()["id"]
+    assert "No documents yet" in c.get(f"/loans/{lid}").text
+    r = c.post("/documents/upload", data={"kind": "ID_PROOF", "title": "Aadhaar", "loan_id": str(lid),
+                                          "csrf_token": tok(c, f"/loans/{lid}")},
+               files={"file": ("aadhaar.jpg", JPEG, "image/jpeg")}, headers={"referer": f"/loans/{lid}"})
+    assert "“Aadhaar” stored, encrypted." in r.text
+    [doc] = c.get(f"/api/documents?loan_id={lid}").json()
+    assert doc["party_id"] == pid and doc["content_type"] == "image/jpeg"
+    assert "Aadhaar" in c.get(f"/parties/{pid}").text and "Aadhaar" in c.get("/documents?q=ravi").text
+    f = c.get(doc["url"])
+    assert f.content == JPEG and f.headers["content-type"] == "image/jpeg"
+    assert "sandbox" in f.headers["content-security-policy"] and "no-store" in f.headers["cache-control"]
+    assert f.headers["x-content-type-options"] == "nosniff"
+    assert c.get(doc["url"] + "?download=1").headers["content-disposition"].startswith("attachment")
+    # a disguised file is refused
+    bad = c.post("/documents/upload", data={"kind": "OTHER", "loan_id": str(lid), "csrf_token": tok(c, f"/loans/{lid}")},
+                 files={"file": ("x.pdf", b"<script>alert(1)</script>", "application/pdf")},
+                 headers={"referer": f"/loans/{lid}"})
+    assert "only PDF, JPEG, PNG or WebP" in bad.text
+    # delete: file gone, record kept, view logged
+    c.post(f"/documents/{doc['id']}/delete", data={"csrf_token": tok(c, f"/loans/{lid}")},
+           headers={"referer": f"/loans/{lid}"})
+    assert list(tmp_path.glob("*.ltd")) == [] and c.get(f"/api/documents?loan_id={lid}").json() == []
+    assert "was deleted" in c.get(doc["url"], follow_redirects=True).text
+    log = c.get("/activity").text
+    assert "Document added" in log and "Document opened" in log and "Document deleted" in log and "“Aadhaar”" in log
+
+
+def test_documents_switched_off_without_key(client):
+    login(client)
+    page = client.get("/documents").text
+    assert "Documents are switched off: DOCUMENT_KEY is not set" in page and "gen-doc-key" in page

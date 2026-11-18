@@ -5,7 +5,10 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY loan_tracker ./loan_tracker
-RUN pip install . && useradd --create-home --uid 1000 app
+RUN pip install . && useradd --create-home --uid 1000 app \
+    && mkdir -p /data/documents && chown app:app /data/documents && chmod 700 /data/documents
+# encrypted documents live here (a named volume in docker-compose.yml)
+ENV DOCUMENT_DIR=/data/documents
 
 USER app
 EXPOSE 8000

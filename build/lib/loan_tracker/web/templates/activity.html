@@ -19,6 +19,7 @@
       <td style="white-space:normal">
         {% set d = r.detail or {} %}
         {% if d.loan_id %}<a class="linkish" href="/loans/{{ d.loan_id }}">LN-{{ d.loan_id }}</a> · {% elif r.entity == "loan" %}<a class="linkish" href="/loans/{{ r.entity_id }}">LN-{{ r.entity_id }}</a> · {% elif r.entity == "party" %}<a class="linkish" href="/parties/{{ r.entity_id }}">{{ d.name }}</a>{% endif %}
+        {% if r.entity in ("document", "bank_import", "cash_account") and d.name %}“{{ d.name }}” {% endif %}
         {% if d.type %}{{ d.type|lower }}{% if r.entity == "ledger_entry" %} #{{ r.entity_id }}{% endif %}{% endif %}
         {% if d.amount_paise %} {{ d.amount_paise|int|inr }}{% endif %}
         {% if d.principal_paise %}{{ d.direction|lower }} {{ d.principal_paise|int|inr(decimals=False) }} at {{ d.rate }}% · {{ d.book|lower }}{% endif %}

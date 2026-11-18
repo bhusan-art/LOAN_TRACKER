@@ -703,6 +703,7 @@ class TestDocuments:
                                actor="owner", loan_id=loan.id)
         assert (d.party_id, d.loan_id, d.title, d.content_type, d.size_bytes) == (
             loan.party_id, loan.id, "aadhaar", "application/pdf", len(PDF_BYTES))
+        assert (tmp_path / "docs" / f"{d.uuid}.ltd").stat().st_mode & 0o777 == 0o600
         on_disk = (tmp_path / "docs" / f"{d.uuid}.ltd").read_bytes()
         assert b"ID proof" not in on_disk and on_disk.startswith(b"LTD1")
         assert svc.read_document(s, vault, d.id)[1] == PDF_BYTES

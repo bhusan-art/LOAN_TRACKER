@@ -145,6 +145,7 @@ def main(argv=None) -> None:
     sc = sub.add_parser("scheduler")
     sc.add_argument("--at", default=None, help="time of day, default 08:00 (or JOB_TIME)")
     sub.add_parser("demo-data")
+    sub.add_parser("gen-doc-key", help="print a new DOCUMENT_KEY for .env")
     args = p.parse_args(argv)
     if args.cmd == "scheduler" and not args.at:
         import os
@@ -160,6 +161,11 @@ def main(argv=None) -> None:
         cmd_scheduler(args)
     elif args.cmd == "demo-data":
         cmd_demo_data(args)
+    elif args.cmd == "gen-doc-key":
+        from loan_tracker.docvault import new_key
+        print(f"DOCUMENT_KEY={new_key()}")
+        print("# Put this line in .env and ALSO in your password manager.", file=sys.stderr)
+        print("# Without this key the stored documents cannot be opened - not even from a backup.", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -111,6 +111,8 @@ ACTION_LABELS = {
     "PLAN_ADDED": ("Plan added", "purple"), "PLAN_CANCELLED": ("Plan cancelled", "orange"),
     "BANK_IMPORTED": ("Statement imported", "purple"), "BANK_LINKED": ("Bank line linked", "green"),
     "BANK_IGNORED": ("Bank line ignored", "gray"), "BANK_UNDONE": ("Bank line reopened", "orange"),
+    "DOC_UPLOADED": ("Document added", "purple"), "DOC_VIEWED": ("Document opened", "gray"),
+    "DOC_DELETED": ("Document deleted", "red"),
 }
 
 KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}

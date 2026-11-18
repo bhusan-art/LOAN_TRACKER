@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, stat, empty, book_tag, dir_tag %}
+{% block title %}What-if{% endblock %}
+{% block crumb %}What-if simulator{% endblock %}
+{% macro delta(a, b, good="up") -%}
+{% set d = b - a %}{% if d == 0 %}<span class="muted">—</span>{% else %}
+<b class="num {{ '' if good == 'none' else 'pos' if (d > 0) == (good == 'up') else 'negv' }}">{{ "+" if d > 0 else "−" }}{{ (d if d > 0 else -d)|inr }}</b>{% endif %}
+{%- endmacro %}
+{% block content %}
+<div class="heading">
+  <div><div class="eyebrow">Planning</div><h1>What-if simulator</h1>
+    <p class="subtitle">Try a change before you make it. The real interest engine runs on a copy; <b>nothing here is saved</b>.</p></div>
+  <nav class="tabs" aria-label="Mode">
+    <a class="{{ 'active' if form.mode != 'new' }}" href="/simulate?mode=loan">Change a loan</a>
+    <a class="{{ 'active' if form.mode == 'new' }}" href="/simulate?mode=new">New loan</a></nav>
+</div>
+{% if sim_error %}<div class="alert red" style="margin-bottom:18px">{{ sim_error }}</div>{% endif %}
+
+{% if form.mode != "new" %}
+<div class="card" style="margin-bottom:19px">
+  <form method="get" action="/simulate" id="simform">
+    <input type="hidden" name="mode" value="loan"><input type="hidden" name="run" value="1">
+    <div class="formgrid four">
+      <div class="field full"><label for="sl">Loan</label><select id="sl" name="loan_id" required>
+        <option value="">Choose a loan…</option>
+        {% for r in loans %}<option value="{{ r.loan.id }}" {{ "selected" if form.loan_id == r.loan.id|string }}>LN-{{ r.loan.id }} · {{ "Lent to" if r.loan.direction == "GIVEN" else "Borrowed from" }} {{ r.loan.party.name }} · {{ r.result.balances.principal_outstanding_paise|inr(decimals=False) }} at {{ r.loan.rate|pct }}</option>{% endfor %}
+      </select></div>
+      <div class="field"><label for="sk">What if…</label><select id="sk" name="kind">
+        {% for k, lab in [("EXTRA_PAYMENT", "Part of the principal is repaid early"), ("PAYOFF", "The loan is paid off in full"), ("RATE_CHANGE", "The interest rate changes"), ("MISS", "Interest is not paid for a few months"), ("TOPUP", "More money is added to the loan")] %}
+        <option value="{{ k }}" {{ "selected" if form.kind == k }}>{{ lab }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="so">From / on</label><input id="so" type="date" name="on" value="{{ form.on }}" min="{{ today.isoformat() }}"></div>
+      <div class="field" data-for="EXTRA_PAYMENT TOPUP"><label for="sa">Amount (₹)</label><input id="sa" name="amount" value="{{ form.amount }}" inputmode="decimal" placeholder="e.g. 50,000"></div>
+      <div class="field" data-for="RATE_CHANGE"><label for="sr">New rate (%)</label><input id="sr" name="rate" value="{{ form.rate }}" inputmode="decimal" placeholder="e.g. 1.5"></div>
+      <div class="field" data-for="MISS"><label for="sm">Months not paid</label><input id="sm" name="months" type="number" min="1" max="24" value="{{ form.months }}"></div>
+      <div class="field"><label for="sh">Compare over</label><select id="sh" name="horizon">{% for n in [3, 6, 12, 24] %}<option value="{{ n }}" {{ "selected" if form.horizon == n }}>Next {{ n }} months</option>{% endfor %}</select></div>
+    </div>
+    <div class="formfoot"><span class="muted tiny" style="margin-right:auto">Both columns assume interest is paid on each due date, so only your change differs.</span>
+      <button class="btn">{{ icon("spark") }}Simulate</button></div>
+  </form>
+</div>
+<script>
+(function () {
+  var k = document.getElementById("sk");
+  function sync() { document.querySelectorAll("[data-for]").forEach(function (el) {
+    el.hidden = el.dataset.for.split(" ").indexOf(k.value) < 0; }); }
+  k.addEventListener("change", sync); sync();
+})();
+</script>
+
+{% if result %}{% set a, b, L = result.actual, result.simulated, result.loan %}{% set given = L.direction == "GIVEN" %}
+<div class="card" style="margin-bottom:19px">
+  <div class="cardhead"><h2>LN-{{ L.id }} · {{ L.party.name }} {{ dir_tag(L.direction) }} {{ book_tag(L.book) }}</h2>
+    <span class="muted tiny">{{ result.today|dmy }} → {{ result.horizon|dmy }}</span></div>
+  {% if result.arrears_today_paise %}<div class="alert" style="margin-bottom:14px">{{ result.arrears_today_paise|inr }} of interest is unpaid today. Every payment clears the oldest unpaid interest first (penalty → oldest interest → principal), so {% if result.scenario.kind in ("EXTRA_PAYMENT", "PAYOFF") %}less of the extra money reduces the principal, and {% endif %}newer dues can still show as unpaid at the end.</div>{% endif %}
+  <div class="tablewrap"><table class="simtable">
+    <tr><th></th><th class="right">As it is</th><th class="right">What if</th><th class="right hide-sm">Difference</th></tr>
+    <tr><td class="tdmain">Interest {{ "you earn" if given else "you pay" }}</td><td class="tdright num">{{ a.interest_paise|inr }}</td><td class="tdright num">{{ b.interest_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.interest_paise, b.interest_paise, "up" if given else "down") }}</td></tr>
+    <tr><td>Money {{ "received" if given else "you pay out" }}</td><td class="tdright num">{{ a.payments_paise|inr }}</td><td class="tdright num">{{ b.payments_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.payments_paise, b.payments_paise, "none") }}</td></tr>
+    {% if b.topups_paise %}<tr><td>Extra {{ "lent" if given else "borrowed" }}</td><td class="tdright num">{{ a.topups_paise|inr }}</td><td class="tdright num">{{ b.topups_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.topups_paise, b.topups_paise, "none") }}</td></tr>{% endif %}
+    <tr><td>Principal left at the end</td><td class="tdright num">{{ a.principal_left_paise|inr }}</td><td class="tdright num">{{ b.principal_left_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.principal_left_paise, b.principal_left_paise, "none") }}</td></tr>
+    <tr><td>Unpaid interest at the end</td><td class="tdright num">{{ a.interest_left_paise|inr }}</td><td class="tdright num">{{ b.interest_left_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.interest_left_paise, b.interest_left_paise, "down" if given else "down") }}</td></tr>
+    <tr><td>To close it on {{ result.horizon|dmy }}</td><td class="tdright num">{{ a.payoff_paise|inr }}</td><td class="tdright num">{{ b.payoff_paise|inr }}</td><td class="tdright hide-sm">{{ delta(a.payoff_paise, b.payoff_paise, "none") }}</td></tr>
+    <tr><td>Rate at the end</td><td class="tdright">{{ a.effective_rate|pct }}</td><td class="tdright">{{ b.effective_rate|pct }}</td><td class="hide-sm"></td></tr>
+    {% if b.closed_on or a.closed_on %}<tr><td>Closed on</td><td class="tdright">{{ a.closed_on|dmy if a.closed_on else "—" }}</td><td class="tdright">{{ b.closed_on|dmy if b.closed_on else "—" }}</td><td class="hide-sm"></td></tr>{% endif %}
+  </table></div>
+</div>
+<div class="two equal">
+  <div class="card">
+    <div class="cardhead"><h2>Interest dues</h2><span class="muted tiny">As it is → what if</span></div>
+    {% set bdues = {} %}{% for d in b.dues %}{% set _ = bdues.update({d.due_date: d}) %}{% endfor %}
+    {% set adues = {} %}{% for d in a.dues %}{% set _ = adues.update({d.due_date: d}) %}{% endfor %}
+    {% set dates = (adues.keys()|list + bdues.keys()|list)|unique|sort %}
+    {% for dt in dates %}{% set x, y = adues.get(dt), bdues.get(dt) %}
+    <div class="metricrow"><span>{{ dt|dmy }}</span>
+      <b class="num">{{ x.interest_paise|inr if x else "—" }} → {{ y.interest_paise|inr if y else "—" }}{% if y and not y.paid %} <span class="tag red">unpaid</span>{% endif %}</b></div>
+    {% else %}{{ empty("No dues in this window.", "calendar") }}{% endfor %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Funding links</h2><span class="muted tiny">Monthly spread at the end</span></div>
+    {% for e in result.links %}
+    <div class="listitem"><div class="bubble">{{ icon("link") }}</div>
+      <div style="min-width:0"><strong>{{ "Funded by" if given else "Funds" }} <a class="linkish" href="/loans/{{ e.other.id }}">LN-{{ e.other.id }} {{ e.other.party.name }}</a></strong>
+        <small>Still in use {{ e.exposure_actual|inr(decimals=False) }} → {{ e.exposure_sim|inr(decimals=False) }}{% if e.exposure_sim < e.exposure_actual and given %} · the freed borrowed money costs you interest until you use it{% endif %}</small></div>
+      <div class="right"><b class="num {{ 'negv' if e.spread_sim < 0 }}">{{ e.spread_actual|inr }} → {{ e.spread_sim|inr }}</b><br><small>a month</small></div>
+    </div>{% else %}{{ empty("This loan is not linked to borrowed money.", "link") }}{% endfor %}
+  </div>
+</div>
+{% elif not sim_error %}{{ empty("Choose a loan and a change, then press Simulate.", "spark") }}{% endif %}
+
+{% else %}
+<div class="card" style="margin-bottom:19px">
+  <form method="get" action="/simulate">
+    <input type="hidden" name="mode" value="new"><input type="hidden" name="run" value="1">
+    <div class="formgrid four">
+      <div class="field"><label for="nd">I would</label><select id="nd" name="direction"><option value="GIVEN" {{ "selected" if form.direction == "GIVEN" }}>Lend money</option><option value="TAKEN" {{ "selected" if form.direction == "TAKEN" }}>Borrow money</option></select></div>
+      <div class="field"><label for="na">Amount (₹) *</label><input id="na" name="amount" value="{{ form.amount }}" required inputmode="decimal" placeholder="e.g. 1,00,000"></div>
+      <div class="field"><label for="nr">Rate (% a month) *</label><input id="nr" name="rate" value="{{ form.rate }}" required inputmode="decimal" placeholder="e.g. 2"></div>
+      <div class="field"><label for="nb">Book</label><select id="nb" name="loan_book"><option value="BUSINESS" {{ "selected" if form.loan_book == "BUSINESS" }}>Business</option><option value="PERSONAL" {{ "selected" if form.loan_book == "PERSONAL" }}>Personal</option></select></div>
+      <div class="field"><label for="ns">Start date</label><input id="ns" type="date" name="start" value="{{ form.start }}" min="{{ today.isoformat() }}"></div>
+      <div class="field"><label for="ndd">Due day</label><input id="ndd" type="number" min="1" max="31" name="due_day" value="{{ form.due_day }}" placeholder="same as start"></div>
+      <div class="field"><label for="nm">Maturity (optional)</label><input id="nm" type="date" name="maturity" value="{{ form.maturity }}"></div>
+      <div class="field"><label for="nw">Forecast window</label><select id="nw" name="days">{% for n in [30, 60, 90, 180] %}<option value="{{ n }}" {{ "selected" if form.days == n }}>{{ n }} days</option>{% endfor %}</select></div>
+    </div>
+    <div class="formfoot"><span class="muted tiny" style="margin-right:auto">Uses your account balances and every loan you already have.</span>
+      <button class="btn">{{ icon("spark") }}Simulate</button></div>
+  </form>
+</div>
+{% if new %}{% set e0, e1, c1 = new.before.expected, new.after.expected, new.after.cautious %}
+{% set lend = new.terms.direction == "GIVEN" %}
+<div class="stats">
+  {{ stat("Interest a month", new.monthly_interest_paise|inr, "you " ~ ("earn" if lend else "pay") ~ " for a full month", "chart") }}
+  {{ stat("Interest in the window", new.interest_in_window_paise|inr, "due by " ~ ((today + timedelta(days=form.days))|dmy), "calendar") }}
+  {{ stat("Lowest balance now", e0.low_paise|inr(decimals=False), ("short from " ~ (e0.short_date|dmy)) if e0.short_date else "without this loan", "wallet") }}
+  {{ stat("Lowest balance with it", e1.low_paise|inr(decimals=False), ("short from " ~ (e1.short_date|dmy)) if e1.short_date else "you can afford it", "shield") }}
+</div>
+{% if e1.short_date and not e0.short_date %}<div class="alert red" style="margin-bottom:18px">With this loan you would be {{ e1.short_paise|inr }} short on {{ e1.short_date|dmy }}{% if new.before.buffer_paise %} (your minimum {{ new.before.buffer_paise|inr }}){% endif %}.{% if lend %} Borrow first, start later, or lend less.{% endif %}</div>
+{% elif c1.short_date and not new.before.cautious.short_date %}<div class="alert" style="margin-bottom:18px">Affordable if borrowers pay on time; if late borrowers don't pay you could be {{ c1.short_paise|inr }} short on {{ c1.short_date|dmy }}.</div>
+{% elif not e1.short_date %}<div class="notice" style="margin-bottom:18px">Your cash stays above {{ "your minimum" if new.before.buffer_paise else "zero" }} for the whole window with this loan.</div>{% endif %}
+{% if not new.before.has_accounts %}<p class="muted tiny">No cash accounts yet, so balances start from ₹0. <a class="link" href="/cash">Add accounts</a> for a real answer.</p>{% endif %}
+<div class="card">
+  <div class="cardhead"><h2>This loan's cash flows</h2><span class="muted tiny">Interest assumed paid on each due date</span></div>
+  {% for d, amt in new.flows %}
+  <div class="metricrow"><span>{{ d|dmy }}</span><b class="num {{ 'pos' if amt > 0 else 'negv' }}">{{ "+" if amt > 0 else "−" }}{{ (amt if amt > 0 else -amt)|inr }}</b></div>
+  {% else %}{{ empty("Nothing in this window.", "calendar") }}{% endfor %}
+</div>
+{% elif not sim_error %}{{ empty("Enter the loan you are thinking about, then press Simulate.", "spark") }}{% endif %}
+{% endif %}
+{% endblock %}
