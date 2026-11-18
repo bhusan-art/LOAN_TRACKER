@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from loan_tracker import auth
+from loan_tracker import services as svc
 from loan_tracker.config import Settings
 from loan_tracker.db import models as m
 from loan_tracker.web.app import create_app
@@ -576,3 +577,34 @@ def test_statement_link_guessing_is_limited(client):
     anon = TestClient(client.app)
     codes = [anon.get(f"/s/guess{i:04d}").status_code for i in range(32)]
     assert codes[:30] == [404] * 30 and codes[-1] == 429
+
+
+def test_failure_counters_forget_old_addresses(client):
+    import time as _t
+    anon = TestClient(client.app)
+    anon.get("/s/nope0001")
+    table = client.app.state.failed_shares
+    assert len(table) == 1
+    for q in table.values():                       # pretend that failure was 16 minutes ago
+        q[0] -= 16 * 60
+    table["198.51.100.7"].append(_t.time() - 20 * 60)
+    anon.get("/s/nope0002")
+    assert len(table) == 1 and len(next(iter(table.values()))) == 1
+
+
+def test_business_loan_statement_uses_business_name(s):
+    from datetime import datetime, timezone
+    s.add(m.AppUser(username="owner", password_hash=auth.hash_password("a long password"), totp_secret=SECRET))
+    s.flush()
+    maker = sessionmaker(bind=s.connection(), join_transaction_mode="create_savepoint", expire_on_commit=False)
+    c = TestClient(create_app(Settings(secret_key="t", receipt_name="A. Owner", receipt_business_name="Example Finance"),
+                              maker=maker, today_fn=lambda: D(2026, 4, 1)))
+    login(c)
+    pid = c.post("/api/parties", json={"name": "Ravi"}).json()["id"]
+    lid = c.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                     "principal_paise": 100_000, "start_date": "2026-01-01", "rate": "2"}).json()["id"]
+    with maker() as s2:
+        _, token = svc.create_share_link(s2, lid, days=7, actor="o", now=datetime.now(timezone.utc))
+        s2.commit()
+    page = TestClient(c.app).get(f"/s/{token}").text
+    assert "Example Finance" in page and "A. Owner" not in page

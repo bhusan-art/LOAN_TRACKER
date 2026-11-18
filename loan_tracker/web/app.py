@@ -52,6 +52,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.state.today = today_fn or (lambda: clock_today(settings))
     app.state.failed_logins = defaultdict(deque)
     app.state.failed_shares = defaultdict(deque)
+
+    def recent_failures(table: dict, ip: str, now: float, window: int = 900) -> deque:
+        """Failures from ip in the last window seconds. Old entries and empty addresses
+        are dropped, so many one-off addresses cannot grow memory without bound."""
+        for key in [k for k, q in table.items() if not q or now - q[-1] > window]:
+            del table[key]
+        fails = table[ip]
+        while fails and now - fails[0] > window:
+            fails.popleft()
+        return fails
     vault = svc.DocVault.from_settings(settings)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
@@ -237,10 +247,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def login(request: Request, username: str = Form(...), password: str = Form(...),
               code: str = Form(""), s: Session = Depends(db)):
         ip = request.client.host if request.client else "?"
-        fails = app.state.failed_logins[ip]
         now = time.time()
-        while fails and now - fails[0] > 900:
-            fails.popleft()
+        fails = recent_failures(app.state.failed_logins, ip, now)
         if len(fails) >= 5:
             log(request, s, "LOGIN_BLOCKED", actor=username.strip()[:100])
             return back(request, "/login", error="Too many attempts. Wait 15 minutes.")
@@ -587,17 +595,15 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     def public_page(request: Request, name: str, status: int = 200, **ctx):
         """No session, no CSRF token, no sidebar: nothing of the owner's app leaks into it."""
-        ctx.update(request=request, today=app.state.today(),
-                   issuer={"name": settings.receipt_name, "details": settings.receipt_details})
+        ctx.setdefault("issuer", {"name": settings.receipt_name, "details": settings.receipt_details})
+        ctx.update(request=request, today=app.state.today())
         return templates.TemplateResponse(request, name, ctx, status_code=status, headers=PUBLIC_HEADERS)
 
     def open_link(request: Request, token: str, s: Session):
         """The live link for token, or a 'not available' response. Failures are rate limited per IP."""
         ip = request.client.host if request.client else "?"
         now_ts = time.time()
-        fails = app.state.failed_shares[ip]
-        while fails and now_ts - fails[0] > 900:
-            fails.popleft()
+        fails = recent_failures(app.state.failed_shares, ip, now_ts)
         if len(fails) >= 30:
             return None, public_page(request, "public_unavailable.html", 429,
                                      message="Too many attempts. Please try again later.")
@@ -616,7 +622,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         svc.record_share_view(s, link, datetime.now(timezone.utc))
         log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id)
         st = svc.borrower_statement(s, link.loan_id, app.state.today())
-        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at)
+        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at,
+                           issuer=issuer_for(s.get(m.Loan, link.loan_id).book))
 
     @app.get("/s/{token}/receipts/{receipt_id}", response_class=HTMLResponse)
     def shared_receipt(token: str, receipt_id: int, request: Request, s: Session = Depends(db)):
