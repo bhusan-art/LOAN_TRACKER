@@ -286,3 +286,24 @@ class BankTxn(Base):
     note: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+
+
+class Document(Base):
+    """Describes an encrypted file on disk. Only change allowed: mark deleted once (DB trigger)."""
+    __tablename__ = "document"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    uuid: Mapped[str] = mapped_column(Text)
+    party_id: Mapped[int | None] = mapped_column(ID, ForeignKey("party.id"))
+    loan_id: Mapped[int | None] = mapped_column(ID, ForeignKey("loan.id"))
+    kind: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    file_name: Mapped[str] = mapped_column(Text)
+    content_type: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str] = mapped_column(Text)
+    uploaded_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_by: Mapped[str | None] = mapped_column(Text)
+    party: Mapped["Party | None"] = relationship(lazy="joined")

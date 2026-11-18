@@ -683,3 +683,110 @@ class TestOneDayPeriods:
                        as_of=D(2026, 2, 2))
         res = svc.compute_loan(svc.get_loan(s, loan.id), D(2026, 2, 2))
         assert res.loan_status == "CLOSED" and res.dues[-1].due.period_start == res.dues[-1].due.period_end
+
+
+PDF_BYTES = b"%PDF-1.7\n% ID proof scan\n1 0 obj<<>>endobj\n%%EOF"
+
+
+class TestDocuments:
+    def _vault(self, tmp_path, key=None, old=""):
+        from loan_tracker.config import Settings
+        from loan_tracker.docvault import new_key
+        st = Settings(secret_key="t", document_key=key or new_key(), document_key_old=old,
+                      document_dir=str(tmp_path / "docs"))
+        return svc.DocVault.from_settings(st), st
+
+    def test_store_read_encrypted_on_disk(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        d = svc.store_document(s, vault, data=PDF_BYTES, file_name="aadhaar.pdf", kind="ID_PROOF", title="",
+                               actor="owner", loan_id=loan.id)
+        assert (d.party_id, d.loan_id, d.title, d.content_type, d.size_bytes) == (
+            loan.party_id, loan.id, "aadhaar", "application/pdf", len(PDF_BYTES))
+        on_disk = (tmp_path / "docs" / f"{d.uuid}.ltd").read_bytes()
+        assert b"ID proof" not in on_disk and on_disk.startswith(b"LTD1")
+        assert svc.read_document(s, vault, d.id)[1] == PDF_BYTES
+        assert [x.id for x in svc.documents(s, party_id=loan.party_id)] == [d.id]
+
+    def test_refusals(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        other = svc.create_party(s, "Someone else")
+        cases = [(dict(data=b"<html>x</html>"), "only PDF"), (dict(data=b""), "empty"),
+                 (dict(kind="SELFIE"), "what kind"), (dict(party_id=other.id), "belongs to someone else"),
+                 (dict(data=b"%PDF-" + b"0" * (10 * 1024 * 1024)), "larger than 10 MB")]
+        for over, msg in cases:
+            kw = dict(data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o", loan_id=loan.id) | over
+            with pytest.raises(svc.ServiceError, match=msg):
+                svc.store_document(s, vault, **kw)
+        off, _ = self._vault(tmp_path, key=" ")
+        off = svc.DocVault(off.directory, None, {}, "DOCUMENT_KEY is not set")
+        with pytest.raises(svc.ServiceError, match="switched off: DOCUMENT_KEY is not set"):
+            svc.store_document(s, off, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                               loan_id=loan.id)
+
+    def test_tampered_or_missing_file(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        d = svc.store_document(s, vault, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                               loan_id=loan.id)
+        path = tmp_path / "docs" / f"{d.uuid}.ltd"
+        blob = bytearray(path.read_bytes())
+        blob[-3] ^= 0xFF
+        path.write_bytes(bytes(blob))
+        with pytest.raises(svc.ServiceError, match="damaged"):
+            svc.read_document(s, vault, d.id)
+        path.unlink()
+        with pytest.raises(svc.ServiceError, match="missing"):
+            svc.read_document(s, vault, d.id)
+
+    def test_delete_erases_file_only_after_commit_and_keeps_record(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        d = svc.store_document(s, vault, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                               loan_id=loan.id)
+        s.commit()
+        path = tmp_path / "docs" / f"{d.uuid}.ltd"
+        svc.delete_document(s, vault, d.id, "owner")
+        assert path.exists()                       # not yet: the deletion is not saved
+        s.commit()
+        assert not path.exists()
+        assert svc.documents(s, party_id=loan.party_id) == []
+        kept = svc.documents(s, party_id=loan.party_id, include_deleted=True)[0]
+        assert kept.deleted_by == "owner" and kept.sha256
+        with pytest.raises(svc.ServiceError, match="deleted"):
+            svc.read_document(s, vault, d.id)
+
+    def test_failed_save_leaves_no_file(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        s.commit()
+        svc.store_document(s, vault, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                           loan_id=loan.id)
+        assert len(list((tmp_path / "docs").glob("*.ltd"))) == 1
+        s.rollback()
+        assert list((tmp_path / "docs").glob("*.ltd")) == []
+
+    def test_key_rotation_keeps_old_files_readable(self, s, tmp_path):
+        from loan_tracker.docvault import new_key
+        k1, k2 = new_key(), new_key()
+        v1, _ = self._vault(tmp_path, key=k1)
+        loan = make_loan(s)
+        d = svc.store_document(s, v1, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                               loan_id=loan.id)
+        v2, _ = self._vault(tmp_path, key=k2)
+        with pytest.raises(svc.ServiceError, match="another key"):
+            svc.read_document(s, v2, d.id)
+        v2old, _ = self._vault(tmp_path, key=k2, old=k1)
+        assert svc.read_document(s, v2old, d.id)[1] == PDF_BYTES
+
+    def test_record_is_protected(self, s, tmp_path):
+        vault, _ = self._vault(tmp_path)
+        loan = make_loan(s)
+        d = svc.store_document(s, vault, data=PDF_BYTES, file_name="x.pdf", kind="OTHER", title="t", actor="o",
+                               loan_id=loan.id)
+        for sql, msg in (("UPDATE document SET title = 'x' WHERE id = :i", "only be marked deleted"),
+                         ("DELETE FROM document WHERE id = :i", "records are kept")):
+            with pytest.raises(DBAPIError, match=msg):
+                with s.begin_nested():
+                    s.execute(text(sql), {"i": d.id})

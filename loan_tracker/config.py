@@ -43,6 +43,10 @@ class Settings:
     concentration_flag_pct: int = field(default_factory=lambda: int(_env("CONCENTRATION_FLAG_PCT", "25")))
     # cash forecast (Phase 11): warn when the balance would fall below this (rupees)
     cash_buffer_paise: int = field(default_factory=lambda: _rupees_env("CASH_MIN_BALANCE"))
+    # documents (Phase 14): encryption key(s) and where the encrypted files live
+    document_key: str = field(default_factory=lambda: _env("DOCUMENT_KEY"))
+    document_key_old: str = field(default_factory=lambda: _env("DOCUMENT_KEY_OLD"))
+    document_dir: str = field(default_factory=lambda: _env("DOCUMENT_DIR", "data/documents"))
     # receipts and closure certificates (Phase 10): who issues them
     receipt_name: str = field(default_factory=lambda: _env("RECEIPT_NAME"))
     receipt_business_name: str = field(default_factory=lambda: _env("RECEIPT_BUSINESS_NAME"))
