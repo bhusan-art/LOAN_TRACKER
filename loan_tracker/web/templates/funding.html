@@ -22,7 +22,7 @@
     </table></div>
     {% else %}{{ empty("No links yet. Link borrowed money to the loan it funds to see your spread and pay-before-receive warnings.", "link") }}{% endif %}
   </div>
-  <div class="card">
+  <div class="card owneronly">
     <div class="cardhead"><h2>Add a link</h2></div>
     {% if taken and given %}
     <form method="post" action="/funding">

@@ -33,7 +33,7 @@
 {% if b.credit_paise %}<div class="notice" style="margin-bottom:18px">Credit held: {{ b.credit_paise|inr }} was overpaid. Reverse the payment to refund it.</div>{% endif %}
 
 <div class="two">
-  <div class="card">
+  <div class="card owneronly">
     {% if loan.status not in ("SETTLED", "WRITTEN_OFF") %}
     <div class="cardhead"><h2>{{ "Record a payment received" if given else "Record a payment you made" }}</h2>
       {% if r.projected_due %}<span class="muted tiny">Next due {{ r.projected_due.due_date|dmy }} · {{ r.projected_due.interest_paise|inr }}</span>{% endif %}</div>
@@ -100,7 +100,7 @@
 
 {% if given %}
 <div class="two" id="collections">
-  <div class="card">
+  <div class="card owneronly">
     <div class="cardhead"><h2>Log a contact</h2><span class="muted tiny">Notes and promises never change the money</span></div>
     <form method="post" action="/loans/{{ loan.id }}/contacts">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -212,5 +212,5 @@
   <p class="tiny muted" style="margin-top:8px">They see what is due, the next due date, the amount to close the loan, their payments and receipts. Not your notes, other loans or books.</p>
 </div>
 {% endif %}
-<div style="margin-top:19px">{{ documents_card(docs, party_id=loan.party_id, loan_id=loan.id, vault_problem=vault_problem) }}</div>
+{% if docs is not none %}<div style="margin-top:19px">{{ documents_card(docs, party_id=loan.party_id, loan_id=loan.id, vault_problem=vault_problem) }}</div>{% endif %}
 {% endblock %}

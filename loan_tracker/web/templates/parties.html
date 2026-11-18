@@ -27,7 +27,7 @@
     </table></div>
     {% else %}{{ empty("Nobody yet. Add the first person.", "people") }}{% endif %}
   </div>
-  <div class="card" id="add">
+  <div class="card owneronly" id="add">
     <div class="cardhead"><h2>Add a person</h2></div>
     <form method="post" action="/parties">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">

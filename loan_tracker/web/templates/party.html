@@ -36,6 +36,10 @@
   </div>
   <div class="card">
     <div class="cardhead"><h2>Details</h2></div>
+    {% if role != "OWNER" %}
+    {% for f, label in [("phone","Phone"),("address","Address"),("id_proof_ref","ID proof reference"),("guarantor","Guarantor"),("risk_tag","Risk tag"),("notes","Notes")] %}
+    <div class="metricrow"><span>{{ label }}</span><b style="white-space:pre-line;text-align:right">{{ party[f] or "—" }}</b></div>{% endfor %}
+    {% else %}
     <form method="post" action="/parties/{{ party.id }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="stack">
@@ -45,7 +49,8 @@
       </div>
       <div class="formfoot"><button class="btn secondary">Save details</button></div>
     </form>
+    {% endif %}
   </div>
 </div>
-<div style="margin-top:19px">{{ documents_card(docs, party_id=party.id, vault_problem=vault_problem) }}</div>
+{% if docs is not none %}<div style="margin-top:19px">{{ documents_card(docs, party_id=party.id, vault_problem=vault_problem) }}</div>{% endif %}
 {% endblock %}

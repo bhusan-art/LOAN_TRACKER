@@ -608,3 +608,81 @@ def test_business_loan_statement_uses_business_name(s):
         s2.commit()
     page = TestClient(c.app).get(f"/s/{token}").text
     assert "Example Finance" in page and "A. Owner" not in page
+
+
+def _viewer_client(client, s):
+    s.add(m.AppUser(username="acct", password_hash=auth.hash_password("acct pass word 1"), totp_secret=SECRET,
+                    role="VIEWER"))
+    s.flush()
+    v = TestClient(client.app)
+    r = v.post("/login", data={"username": "acct", "password": "acct pass word 1",
+                               "code": auth.totp_code(SECRET), "csrf_token": tok(v, "/login")})
+    assert r.status_code == 200 and "Read-only" in r.text
+    return v
+
+
+def test_viewer_can_read_everything_and_change_nothing(client, s):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 100_000, "start_date": "2026-01-01", "rate": "2"}).json()["id"]
+    eid = client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 500}).json()["id"]
+    v = _viewer_client(client, s)
+    for path in ("/", "/loans", f"/loans/{lid}", "/parties", f"/parties/{pid}", "/collections", "/cash",
+                 "/calendar", "/reports", "/receipts", "/activity", "/simulate", "/funding", "/export.csv"):
+        assert v.get(path).status_code == 200, path
+    assert v.get("/api/loans").json()[0]["id"] == lid
+    # every write is refused, page or API, whatever route
+    before = len(client.get(f"/api/loans/{lid}/entries").json())
+    assert v.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 1}).status_code == 403
+    assert v.post(f"/api/entries/{eid}/reverse", json={}).status_code == 403
+    assert v.post("/api/parties", json={"name": "X"}).status_code == 403
+    r = v.post(f"/loans/{lid}/entries", data={"type": "PAYMENT", "amount": "1", "csrf_token": tok(v, f"/loans/{lid}")})
+    assert "Read-only access" in r.text
+    assert len(client.get(f"/api/loans/{lid}/entries").json()) == before
+    # documents are owner-only, not even listed
+    assert "Read-only access" in v.get("/documents").text
+    assert v.get("/api/documents").status_code == 403
+    assert 'id="documents"' not in v.get(f"/loans/{lid}").text
+    # the read-only page hides change controls
+    page = v.get(f"/loans/{lid}").text
+    assert '<body class="viewer">' in page and "Read-only access" in page
+    assert ">Lend money<" not in v.get("/").text
+
+
+def test_every_write_route_refuses_viewers(client, s):
+    """Regression guard: walk every non-GET route as a viewer; none may get through."""
+    v = _viewer_client(client, s)
+    checked = 0
+    for route in client.app.routes:
+        path = getattr(route, "path", "")
+        methods = (getattr(route, "methods", None) or set()) - {"GET", "HEAD", "OPTIONS"}
+        if not methods or path in ("/login",):
+            continue
+        url = re.sub(r"\{[^}]+\}", "1", path)
+        for method in methods:
+            kw = {"json": {}} if path.startswith("/api/") else {"data": {"csrf_token": tok(v, "/parties")}}
+            r = v.request(method, url, follow_redirects=False, **kw)
+            assert r.status_code in (303, 403), f"{method} {path} -> {r.status_code}"
+            if r.status_code == 303:
+                assert "Read-only" in v.get(r.headers["location"]).text, f"{method} {path}"
+            checked += 1
+    assert checked > 40
+
+
+def test_disabled_user_and_password_reset_end_sessions(client, s):
+    login(client)
+    assert client.get("/loans").status_code == 200
+    owner = s.scalar(__import__("sqlalchemy").select(m.AppUser).where(m.AppUser.username == "owner"))
+    owner.session_epoch += 1                     # what a password reset does
+    s.flush()
+    r = client.get("/loans", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    login(client)
+    s.add(m.AppUser(username="owner2", password_hash="x", role="OWNER"))
+    s.flush()
+    svc.set_user_enabled(s, "owner", False)
+    assert client.get("/loans", follow_redirects=False).headers["location"] == "/login"
+    r = client.post("/login", data={"username": "owner", "password": "a long password", "code": auth.totp_code(SECRET),
+                                    "csrf_token": tok(client, "/login")})
+    assert "Wrong username" in r.text
