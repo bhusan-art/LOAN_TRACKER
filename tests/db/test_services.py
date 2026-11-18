@@ -664,3 +664,22 @@ class TestBankImport:
             with pytest.raises(DBAPIError, match=msg):
                 with s.begin_nested():
                     s.execute(text(sql), {"i": tid, "m": imp.id})
+
+
+class TestOneDayPeriods:
+    """Regression: interest periods include their end day, so a one-day period has start == end."""
+
+    def test_loan_starting_the_day_before_its_due_day(self, s):
+        loan = make_loan(s, start=D(2025, 6, 24), due_day=25, as_of=D(2025, 6, 24))
+        res = svc.recompute_loan(s, svc.get_loan(s, loan.id), D(2025, 7, 1))
+        first = res.dues[0].due
+        assert (first.period_start, first.period_end, first.due_date) == (D(2025, 6, 24), D(2025, 6, 24),
+                                                                         D(2025, 6, 25))
+
+    def test_payoff_the_day_after_a_due_date(self, s):
+        loan = make_loan(s)                                  # due on the 1st
+        owed = svc.compute_loan(svc.get_loan(s, loan.id), D(2026, 2, 2)).balances.payoff_today_paise
+        svc.post_entry(s, loan.id, type="PAYMENT", entry_date=D(2026, 2, 2), amount_paise=owed,
+                       as_of=D(2026, 2, 2))
+        res = svc.compute_loan(svc.get_loan(s, loan.id), D(2026, 2, 2))
+        assert res.loan_status == "CLOSED" and res.dues[-1].due.period_start == res.dues[-1].due.period_end
