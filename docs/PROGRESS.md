@@ -125,3 +125,11 @@
 ## Next step
 Deferred ideas: application/approval workflow, official WhatsApp API.
 
+
+## UI review fixes (branch ui-fixes)
+- Clicked through all 64 pages and 51 forms/buttons (desktop, phone, dark). Fixed:
+- Documents page now has its own upload form (person, optional loan, kind, title, file).
+- Bank import: a same-amount entry of another person is no longer "already recorded" when the narration names someone else; "Link all" skips it.
+- Settled/closed loans no longer offer WhatsApp reminders or "Log a contact".
+- Flash messages in plain words (Top-up / Rate change / which payment was reversed); funding refusal says how much is still unlinked.
+- Phone layout: no sideways scrolling on person, reports, funding pages; styled file pickers; calendar tabs on one line.

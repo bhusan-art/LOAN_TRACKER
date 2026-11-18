@@ -46,6 +46,10 @@ class LoginRequired(Exception):
     pass
 
 
+ENTRY_WORDS = {"PAYMENT": "Payment", "DISBURSE": "Disbursement", "TOPUP": "Top-up", "RATE_CHANGE": "Rate change",
+               "PENALTY": "Penalty", "WAIVER": "Waiver", "CHARGE": "Charge", "ADJUSTMENT": "Adjustment"}
+
+
 def create_app(settings: Settings | None = None, *, maker: sessionmaker | None = None,
                today_fn: Callable[[], date] | None = None) -> FastAPI:
     settings = settings or get_settings()
@@ -480,7 +484,10 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             new_rate=new_rate or None, payment_mode=payment_mode, reference=reference, note=note)
         log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
             amount_paise=e.amount_paise, entry_date=e.entry_date)
-        msg = f"{type.title()} recorded."
+        msg = f"{ENTRY_WORDS.get(e.type, e.type.replace('_', ' ').capitalize())}"
+        msg += f" of {fmt.inr(e.amount_paise)}" if e.amount_paise else ""
+        msg += f" to {e.new_rate.normalize():f}% a month" if e.type == "RATE_CHANGE" and e.new_rate is not None else ""
+        msg += f" on {e.entry_date:%d %b %Y} recorded."
         if type == "PAYMENT":
             split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
                               for a in res.allocations if a.entry_id == e.id)
@@ -501,7 +508,10 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=note)
         log(request, s, "ENTRY_REVERSED", "ledger_entry", entry_id, loan_id=loan_id, type=original.type,
             amount_paise=original.amount_paise, note=note or None)
-        return back(request, f"/loans/{loan_id}", flash=f"Entry {entry_id} reversed.")
+        what = ENTRY_WORDS.get(original.type, original.type.replace("_", " ").capitalize())
+        what += f" of {fmt.inr(original.amount_paise)}" if original.amount_paise else ""
+        return back(request, f"/loans/{loan_id}",
+                    flash=f"{what} on {original.entry_date:%d %b %Y} reversed (entry #{entry_id}).")
 
     @app.post("/loans/{loan_id}/status", dependencies=[Depends(check_csrf)])
     def loan_status(loan_id: int, request: Request, status: str = Form(""), _: str = Depends(user),
@@ -692,7 +702,11 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         if q.strip():
             needle = q.strip().lower()
             docs = [d for d in docs if needle in d.title.lower() or (d.party and needle in d.party.name.lower())]
-        return render(request, "documents.html", docs=docs, q=q, vault_problem=vault.problem)
+        people = svc.list_parties(s)
+        loans = [(r.loan.id, r.loan.party_id, f"LN-{r.loan.id} · {'lent' if r.loan.direction == 'GIVEN' else 'borrowed'} "
+                  f"{fmt.inr(r.loan.principal_paise, decimals=False)}") for r in svc.portfolio(s, today())]
+        return render(request, "documents.html", docs=docs, q=q, vault_problem=vault.problem, people=people,
+                      doc_loans=loans)
 
     @app.post("/documents/upload", dependencies=[Depends(check_csrf)])
     async def document_upload(request: Request, file: UploadFile = File(...), kind: str = Form("OTHER"),
@@ -768,7 +782,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         counts = {k: sum(1 for x in txns if x.status == k) for k in ("NEW", "LINKED", "RECORDED", "IGNORED")}
         shown = [x for x in txns if x.status == "NEW"] if show == "open" else txns
         sugg = svc.txn_suggestions(s, t, shown)
-        exact = sum(1 for v in sugg.values() if sum(1 for x in v if x.kind == "EXISTING") == 1)
+        exact = sum(1 for v in sugg.values() if sum(1 for x in v if x.kind == "EXISTING" and x.strong) == 1)
         loans = [r for r in svc.portfolio(s, t) if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
         reversed_ids = set(s.scalars(select(m.LedgerEntry.reverses_id).where(m.LedgerEntry.reverses_id.is_not(None))))
         ids = [x.ledger_entry_id for x in shown if x.ledger_entry_id]

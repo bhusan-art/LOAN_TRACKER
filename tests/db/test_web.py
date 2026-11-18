@@ -686,3 +686,40 @@ def test_disabled_user_and_password_reset_end_sessions(client, s):
     r = client.post("/login", data={"username": "owner", "password": "a long password", "code": auth.totp_code(SECRET),
                                     "csrf_token": tok(client, "/login")})
     assert "Wrong username" in r.text
+
+
+def test_documents_page_has_its_own_upload(s, tmp_path):
+    """UI review: the Documents page had no way to add a document."""
+    from loan_tracker.docvault import new_key
+    s.add(m.AppUser(username="owner", password_hash=auth.hash_password("a long password"), totp_secret=SECRET))
+    s.flush()
+    maker = sessionmaker(bind=s.connection(), join_transaction_mode="create_savepoint", expire_on_commit=False)
+    c = TestClient(create_app(Settings(secret_key="test", document_key=new_key(), document_dir=str(tmp_path)),
+                              maker=maker, today_fn=lambda: D(2026, 4, 1)))
+    login(c)
+    assert "Add a person first" in c.get("/documents").text
+    pid = c.post("/api/parties", json={"name": "Ravi"}).json()["id"]
+    page = c.get("/documents").text
+    assert 'action="/documents/upload"' in page and 'type="file"' in page and ">Ravi<" in page
+    r = c.post("/documents/upload", data={"party_id": str(pid), "kind": "ID_PROOF", "title": "PAN card",
+                                          "csrf_token": tok(c, "/documents")},
+               files={"file": ("pan.jpg", JPEG, "image/jpeg")}, headers={"referer": "/documents"})
+    assert "“PAN card” stored, encrypted." in r.text and "PAN card" in r.text
+
+
+def test_entry_flashes_read_as_plain_words(client):
+    """UI review: flashes said 'Topup recorded.', 'Rate_Change recorded.' and 'Entry 11 reversed.'"""
+    c = client
+    login(c)
+    pid = int(post(c, "/parties", {"name": "Ravi"}, follow_redirects=False).headers["location"].rsplit("/", 1)[1])
+    lid = int(post(c, "/loans", {"party_id": pid, "direction": "GIVEN", "book": "PERSONAL", "principal": "1000",
+                                 "start_date": "2026-01-01", "rate": "2", "due_day": "1"},
+                   follow_redirects=False).headers["location"].rsplit("/", 1)[1])
+    page = f"/loans/{lid}"
+    r = post(c, f"{page}/entries", {"type": "TOPUP", "entry_date": "2026-02-01", "amount": "500"}, page=page)
+    assert "Top-up of ₹500.00 on 01 Feb 2026 recorded." in r.text
+    r = post(c, f"{page}/entries", {"type": "RATE_CHANGE", "entry_date": "2026-03-01", "new_rate": "1.5"}, page=page)
+    assert "Rate change to 1.5% a month on 01 Mar 2026 recorded." in r.text
+    eid = c.get(f"/api/loans/{lid}/entries").json()[0]["id"]
+    r = post(c, f"/entries/{eid}/reverse", {}, page=page)
+    assert f"Rate change on 01 Mar 2026 reversed (entry #{eid})." in r.text

@@ -125,6 +125,10 @@ def update_party(s: Session, party_id: int, **fields) -> m.Party:
     return party
 
 
+def list_parties(s: Session) -> list[m.Party]:
+    return list(s.scalars(select(m.Party).order_by(m.Party.name)))
+
+
 def get_party(s: Session, party_id: int) -> m.Party:
     party = s.get(m.Party, party_id)
     if party is None:
@@ -319,10 +323,13 @@ def link_funding(s: Session, *, taken_loan_id: int, given_loan_id: int, amount_p
         select(m.FundingLink).where(m.FundingLink.taken_loan_id == taken.id)))
     used_given = sum(l.amount_paise for l in s.scalars(
         select(m.FundingLink).where(m.FundingLink.given_loan_id == given.id)))
+    from loan_tracker.web.formatting import inr
     if used_taken + amount_paise > taken.principal_paise:
-        raise ServiceError("more than the borrowed amount would be linked")
+        raise ServiceError(f"{inr(amount_paise)} is more than the {inr(taken.principal_paise - used_taken)} of LN-{taken.id}'s "
+                           f"borrowed money still unlinked ({inr(used_taken)} of {inr(taken.principal_paise)} already linked)")
     if used_given + amount_paise > given.principal_paise:
-        raise ServiceError("more than the lent amount would be linked")
+        raise ServiceError(f"{inr(amount_paise)} is more than the {inr(given.principal_paise - used_given)} of LN-{given.id}'s "
+                           f"lent money still unfunded ({inr(used_given)} of {inr(given.principal_paise)} already linked)")
     link = m.FundingLink(taken_loan_id=taken.id, given_loan_id=given.id,
                          amount_paise=amount_paise, link_date=link_date)
     s.add(link)
@@ -847,7 +854,7 @@ def link_exact_matches(s: Session, import_id: int, as_of: date) -> list[m.BankTx
     for t in txns:
         avail = [_replace(e, linked=True) if e.entry_id in used else e for e in entries]
         exact = [x for x in suggest(t.txn_date, t.amount_paise, t.description, loans, avail, limit=10)
-                 if x.kind == "EXISTING"]
+                 if x.kind == "EXISTING" and x.strong]       # never a match the narration contradicts
         if len(exact) == 1:
             link_bank_txn(s, t.id, exact[0].entry_id)
             used.add(exact[0].entry_id)

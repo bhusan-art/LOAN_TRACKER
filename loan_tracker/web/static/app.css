@@ -107,3 +107,12 @@ body.public{display:block;background:var(--bg)}
 body.viewer form[method="post"], body.viewer details.more, body.viewer a[href^="/loans/new"],
 body.viewer a[href="/quick"], body.viewer .owneronly, body.viewer .btn.wa{display:none !important}
 .banner.viewerbanner{background:var(--brandlight);color:var(--brand);border-color:var(--brand)}
+/* UI review fixes: cards in grids may shrink so wide tables scroll inside them on phones */
+.two>*,.three>*,.stack>*,.stats>*,.card{min-width:0}
+/* file pickers match the other inputs */
+.field input[type=file]{padding:8px;cursor:pointer;color:var(--muted)}
+input[type=file]::file-selector-button{font:inherit;font-weight:800;font-size:12px;border:0;border-radius:8px;padding:8px 12px;margin-right:12px;background:var(--brandlight);color:var(--brand);cursor:pointer}
+input[type=file]::file-selector-button:hover{filter:brightness(.96)}
+/* calendar window tabs stay on one line */
+.heading .tabs{flex-wrap:nowrap;flex-shrink:0}.tabs a{white-space:nowrap}
+.cardhead .tiny svg,.muted.tiny svg{width:13px;height:13px;vertical-align:-2px}
