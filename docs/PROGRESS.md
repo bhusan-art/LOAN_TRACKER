@@ -94,6 +94,11 @@
   bank_txn (bank figures locked). Link/record/ignore/undo, link-all-exact, balance
   from statement. /bank pages, /api/bank/*. All /api POSTs must be JSON (CSRF). 241 tests.
 
+- Evaluation after 13: 150-loan/2,565-entry book, every page < 0.5 s, daily job
+  1.2 s. Fixed one-day interest periods (migration 0007: due start <= end; loan
+  starting the day before its due day, payoff the day after a due date).
+  tests/db/test_fuzz.py: random loans and steps through services + real DB. 244 tests.
+
 ## Next step
 Deferred ideas: encrypted document storage, application/approval workflow,
 official WhatsApp API.
