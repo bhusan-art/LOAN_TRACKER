@@ -6,10 +6,38 @@
 {% set kinds = {"ID_PROOF": "ID proof", "AGREEMENT": "Agreement", "CHEQUE": "Cheque", "PHOTO": "Photo", "OTHER": "Other"} %}
 <div class="heading">
   <div><div class="eyebrow">Records</div><h1>Documents</h1>
-    <p class="subtitle">ID proofs, agreements and cheque photos, encrypted on disk. Add them from a person's or a loan's page.</p></div>
+    <p class="subtitle">ID proofs, agreements and cheque photos, encrypted on disk. Add one below, or from a person's or loan's page.</p></div>
   <form class="search" method="get" action="/documents">{{ icon("search") }}<input name="q" value="{{ q }}" placeholder="Title or name" aria-label="Search documents"></form>
 </div>
 {% if vault_problem %}<div class="notice" style="margin-bottom:18px">Documents are switched off: {{ vault_problem }}. Run <code>docker compose exec app python -m loan_tracker.cli gen-doc-key</code>, put the line in <code>.env</code> <b>and in your password manager</b>, then restart.</div>{% endif %}
+{% if not vault_problem %}
+<div class="card owneronly" id="upload" style="margin-bottom:19px">
+  <div class="cardhead"><h2>Add a document</h2><span class="muted tiny">{{ icon("shield") }} Encrypted on disk · PDF or photo up to 10 MB</span></div>
+  {% if people %}
+  <form method="post" action="/documents/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="formgrid four">
+      <div class="field"><label for="up-party">Person *</label><select id="up-party" name="party_id" required onchange="filterLoans(this.value)">
+        <option value="">Choose a person…</option>{% for p in people %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="up-loan">Loan (optional)</label><select id="up-loan" name="loan_id">
+        <option value="">Not for one loan</option>{% for id, pid, label in doc_loans %}<option value="{{ id }}" data-party="{{ pid }}" hidden>{{ label }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="up-kind">Kind</label><select id="up-kind" name="kind">
+        {% for k, lab in kinds.items() %}<option value="{{ k }}">{{ lab }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="up-title">Title</label><input id="up-title" name="title" maxlength="200" placeholder="e.g. Aadhaar front"></div>
+      <div class="field full"><label for="up-file">File *</label><input id="up-file" type="file" name="file" required accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp"></div>
+    </div>
+    <div class="formfoot"><button class="btn">{{ icon("plus") }}Store encrypted</button></div>
+  </form>
+  <script>
+  function filterLoans(party) {
+    var sel = document.getElementById("up-loan");
+    sel.value = "";
+    [].forEach.call(sel.options, function (o) { if (o.dataset.party) o.hidden = o.dataset.party !== party; });
+  }
+  </script>
+  {% else %}{{ empty("Add a person first; documents belong to a person or a loan.", "people") }}{% endif %}
+</div>
+{% endif %}
 <div class="card">
   {% if docs %}<div class="tablewrap"><table>
     <tr><th>Title</th><th>Person</th><th class="hide-sm">Kind</th><th class="hide-sm">Added</th><th class="right hide-sm">Size</th><th></th></tr>

@@ -147,3 +147,19 @@ def test_extra_columns_are_refused_not_guessed():
 def test_trailing_empty_columns_are_fine():
     rows = parse_statement(b"Date,Narration,Debit,Credit,,\n12/11/2026,ATM,500,,,,\n")
     assert rows[0].amount_paise == -50_000
+
+
+def test_existing_entry_of_another_person_is_not_a_match():
+    """UI review: 'NEFT CR-MAHESH TRADERS Rs 1,000' was offered as Ravi's recorded Rs 1,000 (same amount, date)."""
+    entries = [EntryInfo(41, 5, "GIVEN", "PAYMENT", D(2026, 2, 4), 100_000)]       # Ravi's payment, LN-5
+    out = suggest(D(2026, 2, 5), 100_000, "NEFT CR-MAHESH TRADERS", LOANS, entries)
+    assert all(s.kind != "EXISTING" or not s.strong for s in out)
+    assert out[0].kind == "NEW_PAYMENT" and out[0].loan_id == 9                     # Mahesh's own loan comes first
+    weak = [s for s in out if s.kind == "EXISTING"]
+    assert weak and "names Mahesh Traders" in weak[0].reason
+
+
+def test_existing_entry_with_no_name_in_narration_is_still_offered():
+    entries = [EntryInfo(41, 5, "GIVEN", "PAYMENT", D(2026, 2, 4), 150_000)]
+    [best] = suggest(D(2026, 2, 5), 150_000, "UPI 603612345", LOANS, entries)
+    assert (best.kind, best.entry_id, best.strong) == ("EXISTING", 41, True)

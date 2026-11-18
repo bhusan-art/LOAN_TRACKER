@@ -851,3 +851,24 @@ class TestShareLinks:
         assert st.dues[0].due_date == D(2026, 4, 1) and not st.closed
         fields = set(svc.BorrowerStatement.__dataclass_fields__)
         assert not fields & {"book", "notes", "collateral", "party_id", "phone", "address", "status"}
+
+
+def test_link_all_skips_a_match_the_narration_contradicts(s):
+    """UI review: 'Link all already recorded' linked Mahesh's bank credit to Ravi's recorded payment."""
+    ravi = make_loan(s, name="Ravi Kumar")
+    make_loan(s, name="Mahesh Traders")
+    svc.post_entry(s, ravi.id, type="PAYMENT", entry_date=D(2026, 2, 4), amount_paise=100_000, as_of=D(2026, 2, 4))
+    acc = svc.create_cash_account(s, name="HDFC", kind="BANK", book="PERSONAL", balance_paise=0, as_of=D(2026, 1, 1))
+    csv = b"Date,Narration,Debit,Credit\n05/02/26,NEFT CR-MAHESH TRADERS,,1000.00\n"
+    imp, _ = svc.import_statement(s, acc.id, csv, file_name="x.csv", actor="o", as_of=D(2026, 4, 1))
+    assert svc.link_exact_matches(s, imp.id, D(2026, 4, 1)) == []
+    assert svc.bank_txns(s, imp.id)[0].status == "NEW"
+
+
+def test_funding_refusal_says_how_much_is_left(s):
+    taken = make_loan(s, direction="TAKEN", principal=10_000_000, name="Bank")
+    given = make_loan(s, principal=50_000_000, name="Ravi")
+    svc.link_funding(s, taken_loan_id=taken.id, given_loan_id=given.id, amount_paise=6_000_000, link_date=D(2026, 1, 1))
+    with pytest.raises(svc.ServiceError, match=r"₹50,000\.00 is more than the ₹40,000\.00 of LN-\d+'s borrowed money still unlinked"):
+        svc.link_funding(s, taken_loan_id=taken.id, given_loan_id=given.id, amount_paise=5_000_000,
+                         link_date=D(2026, 1, 1))

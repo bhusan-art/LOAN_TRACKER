@@ -7,6 +7,7 @@
 {% set b = r.balances %}
 {% set given = loan.direction == "GIVEN" %}
 {% set live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else r.loan_status %}
+{% set chasing = given and live_status not in ("CLOSED", "SETTLED") %}
 <div class="heading">
   <div>
     <div class="eyebrow">{{ "Loan given" if given else "Loan taken" }} · LN-{{ loan.id }}</div>
@@ -19,7 +20,7 @@
     <a class="btn secondary" href="/activity?loan_id={{ loan.id }}">{{ icon("clock") }}History</a>
     {% if live_status not in ("CLOSED", "SETTLED", "WRITTEN_OFF") %}<a class="btn secondary" href="/simulate?loan_id={{ loan.id }}">{{ icon("spark") }}What if…</a>{% endif %}
     {% if can_close %}<a class="btn" href="/loans/{{ loan.id }}/closure">{{ icon("check") }}No-dues certificate</a>{% endif %}
-    {% if given %}{% if wa %}<a class="btn wa" href="{{ wa }}" target="_blank" rel="noopener">{{ icon("chat") }}WhatsApp reminder</a>
+    {% if chasing %}{% if wa %}<a class="btn wa" href="{{ wa }}" target="_blank" rel="noopener">{{ icon("chat") }}WhatsApp reminder</a>
     {% else %}<a class="btn secondary" href="/parties/{{ loan.party_id }}" title="Add a mobile number to send WhatsApp reminders">{{ icon("chat") }}Add phone for WhatsApp</a>{% endif %}{% endif %}
   </div>
 </div>
@@ -98,7 +99,7 @@
   </div>
 </div>
 
-{% if given %}
+{% if chasing %}
 <div class="two" id="collections">
   <div class="card owneronly">
     <div class="cardhead"><h2>Log a contact</h2><span class="muted tiny">Notes and promises never change the money</span></div>

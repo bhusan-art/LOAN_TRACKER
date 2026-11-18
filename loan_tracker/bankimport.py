@@ -255,17 +255,27 @@ def suggest(txn_date: date, amount_paise: int, description: str, loans: Sequence
     pay_dir = "GIVEN" if money_in else "TAKEN"        # whose payments look like this
     lend_dir = "TAKEN" if money_in else "GIVEN"       # whose disbursements look like this
     out: list[Suggestion] = []
+    party_of = {ln.loan_id: ln.party for ln in loans}
+    named = {ln.loan_id for ln in loans if _name_hits(ln.party, description) or _phone_hit(ln.phone, description)}
+    named_parties = sorted({party_of[i] for i in named})
     for e in entries:
         if e.linked or e.amount_paise != amt or abs((e.entry_date - txn_date).days) > EXISTING_WINDOW_DAYS:
             continue
         if (e.type == "PAYMENT" and e.direction == pay_dir) or (e.type in ("DISBURSE", "TOPUP")
                                                                  and e.direction == lend_dir):
             what = "payment" if e.type == "PAYMENT" else e.type.lower()
-            out.append(Suggestion("EXISTING", e.loan_id, e.entry_id, 100, True,
-                                  f"already recorded: {what} of the same amount on {e.entry_date:%d %b %Y} "
-                                  f"(LN-{e.loan_id}, entry #{e.entry_id})"))
-    if out:      # already in the ledger: only offer the link, never a second payment (double counting)
-        out.sort(key=lambda s: (abs((s.entry_id or 0)), s.loan_id))
+            reason = (f"already recorded: {what} of the same amount on {e.entry_date:%d %b %Y} "
+                      f"(LN-{e.loan_id}{', ' + party_of[e.loan_id] if e.loan_id in party_of else ''}, entry #{e.entry_id})")
+            # the narration names someone else: same amount and date is a coincidence, not a match
+            other = named and e.loan_id not in named and named_parties
+            if other:
+                out.append(Suggestion("EXISTING", e.loan_id, e.entry_id, 20, False,
+                                      reason + f" - but the narration names {', '.join(other)}"))
+            else:
+                out.append(Suggestion("EXISTING", e.loan_id, e.entry_id, 100, True, reason))
+    if any(s.strong for s in out):   # already in the ledger: only offer the link, never a second payment
+        out = [s for s in out if s.strong]
+        out.sort(key=lambda s: (s.entry_id or 0, s.loan_id))
         return out[:limit]
     for ln in loans:
         if ln.direction != pay_dir:
