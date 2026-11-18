@@ -140,6 +140,9 @@ class AppUser(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     totp_secret: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    role: Mapped[str] = mapped_column(Text, default="OWNER", server_default="OWNER")   # OWNER / VIEWER
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    session_epoch: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class JobRun(Base):

@@ -102,3 +102,8 @@ body.public{display:block;background:var(--bg)}
 .sharebox{border:1px solid var(--brand);background:var(--brandlight);border-radius:14px;padding:16px;margin-bottom:18px}
 .sharebox input{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 10px;background:var(--surface);color:var(--text);font-family:ui-monospace,monospace;font-size:12px}
 .sharebox .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+
+/* Phase 16: read-only viewers (the server refuses changes; this only removes the controls) */
+body.viewer form[method="post"], body.viewer details.more, body.viewer a[href^="/loans/new"],
+body.viewer a[href="/quick"], body.viewer .owneronly, body.viewer .btn.wa{display:none !important}
+.banner.viewerbanner{background:var(--brandlight);color:var(--brand);border-color:var(--brand)}

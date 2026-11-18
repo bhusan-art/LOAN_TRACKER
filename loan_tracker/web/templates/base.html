@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/app.css?v=2">
   <script>try { if (localStorage.getItem("theme") === "dark") document.documentElement.classList.add("dark-pending"); } catch (e) {}</script>
 </head>
-<body>
+<body class="{{ 'viewer' if role == 'VIEWER' }}">
 <script>if (document.documentElement.classList.contains("dark-pending")) document.body.classList.add("dark");</script>
 {% if user %}
 {% set path = request.url.path %}
@@ -19,22 +19,26 @@
     <a class="brand" href="/"><span class="brandmark">◈</span>ledgerly<span style="color:var(--brand)">.</span></a>
     <div class="navtitle">Workspace</div>
     <nav class="nav">
+      {% set owner_only = ["/documents", "/bank"] %}
       {% for href, label, ic in [("/", "Overview", "dashboard"), ("/loans", "Loans", "wallet"), ("/collections", "Collections", "phone"), ("/receipts", "Receipts", "file"), ("/documents", "Documents", "shield"), ("/parties", "People", "people"), ("/cash", "Cash & forecast", "wallet"), ("/bank", "Bank import", "download"), ("/simulate", "What-if", "spark"), ("/calendar", "Cash calendar", "calendar"), ("/reports", "Reports", "chart"), ("/funding", "Funding links", "link"), ("/activity", "Activity log", "clock")] %}
+      {% if role == "OWNER" or href not in owner_only %}
       <a href="{{ href }}" class="{{ 'active' if (href == '/' and path == '/') or (href != '/' and path.startswith(href)) }}">{{ icon(ic) }}{{ label }}
         {% if href == "/loans" and nav_overdue %}<span class="numb">{{ nav_overdue }}</span>{% endif %}</a>
-      {% endfor %}
+      {% endif %}{% endfor %}
     </nav>
     <div class="navtitle" style="margin-top:22px">Quick actions</div>
     <nav class="nav">
+      {% if role == "OWNER" %}
       <a href="/quick" class="{{ 'active' if path == '/quick' }}">{{ icon("plus") }}Record payment</a>
       <a href="/loans/new?direction=GIVEN">{{ icon("plus") }}Lend money</a>
       <a href="/loans/new?direction=TAKEN">{{ icon("plus") }}Borrow money</a>
+      {% endif %}
       <a href="/export.csv">{{ icon("download") }}Export CSV</a>
     </nav>
     <div class="sidebottom">
       <div class="sideuser">
         <div class="avatar">{{ user[:2]|upper }}</div>
-        <div><strong>{{ user }}</strong><small>Private workspace</small></div>
+        <div><strong>{{ user }}</strong><small>{{ "Read-only access" if role == "VIEWER" else "Private workspace" }}</small></div>
         <a class="iconbtn" style="margin-left:auto" href="/logout" title="Log out">{{ icon("logout") }}</a>
       </div>
     </div>
@@ -55,6 +59,7 @@
       </div>
     </header>
     <div class="content">
+      {% if role == "VIEWER" %}<div class="banner viewerbanner">Read-only access: you can look at everything here, but only the owner can make changes.</div>{% endif %}
       {% if insecure_secret %}<div class="banner">SECRET_KEY is not set to a long random value in .env — logins are not secure until you set it and restart.</div>{% endif %}
       {% block content %}{% endblock %}
       <div class="footerline">Ledgerly · amounts calculated by the ledger engine as of {{ today|dmy }}</div>

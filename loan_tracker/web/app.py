@@ -38,6 +38,10 @@ BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
 PUBLIC_PATHS = ("/login", "/static", "/healthz", "/manifest.webmanifest", "/sw.js")
 
 
+class ReadOnly(Exception):
+    """A viewer tried to change something."""
+
+
 class LoginRequired(Exception):
     pass
 
@@ -52,6 +56,16 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.state.today = today_fn or (lambda: clock_today(settings))
     app.state.failed_logins = defaultdict(deque)
     app.state.failed_shares = defaultdict(deque)
+
+    def recent_failures(table: dict, ip: str, now: float, window: int = 900) -> deque:
+        """Failures from ip in the last window seconds. Old entries and empty addresses
+        are dropped, so many one-off addresses cannot grow memory without bound."""
+        for key in [k for k, q in table.items() if not q or now - q[-1] > window]:
+            del table[key]
+        fails = table[ip]
+        while fails and now - fails[0] > window:
+            fails.popleft()
+        return fails
     vault = svc.DocVault.from_settings(settings)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
@@ -111,10 +125,27 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             "payment_mode": r.payment_mode, "reference": r.reference,
             "cancelled": r.cancelled_at is not None, "cancel_reason": r.cancel_reason}.items()}
 
-    def user(request: Request) -> str:
+    def user(request: Request, s: Session = Depends(db)) -> str:
+        """The logged-in user, checked against the database on every request (a disabled
+        user, or a password reset, ends old sessions at once). Viewers may only read:
+        every request other than GET/HEAD from a viewer is refused here, for pages and
+        API alike, so a new route cannot forget it."""
         name = request.session.get("user")
         if not name:
             raise LoginRequired()
+        u = s.scalar(select(m.AppUser).where(m.AppUser.username == name))
+        if u is None or u.disabled_at is not None or request.session.get("epoch") != u.session_epoch:
+            request.session.clear()
+            raise LoginRequired()
+        request.state.role = u.role
+        if u.role != "OWNER" and request.method not in ("GET", "HEAD"):
+            raise ReadOnly()
+        return name
+
+    def owner_only(request: Request, name: str = Depends(user)) -> str:
+        """For things viewers may not even look at (documents: ID proofs, agreements)."""
+        if request.state.role != "OWNER":
+            raise ReadOnly()
         return name
 
     def today() -> date:
@@ -145,6 +176,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             with app.state.maker() as s2:
                 nav_overdue = s2.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
         base = dict(request=request, book=book_of(request), today=app.state.today(),
+                    role=getattr(request.state, "role", None),
                     flash=request.session.pop("flash", None), error=request.session.pop("error", None),
                     user=request.session.get("user"), csrf=csrf_token(request),
                     nav_overdue=nav_overdue, insecure_secret=insecure_secret)
@@ -186,6 +218,14 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             return date.fromisoformat(v)
         except ValueError as exc:
             raise svc.ServiceError(f"not a date: {v!r}") from exc
+
+    @app.exception_handler(ReadOnly)
+    async def _read_only(request: Request, exc: ReadOnly):
+        msg = "Read-only access: you can look, but only the owner can make changes or open documents."
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": msg}, status_code=403)
+        request.session["error"] = msg
+        return RedirectResponse(referer(request, "/") if request.method != "GET" else "/", status_code=303)
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, exc: LoginRequired):
@@ -237,15 +277,13 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def login(request: Request, username: str = Form(...), password: str = Form(...),
               code: str = Form(""), s: Session = Depends(db)):
         ip = request.client.host if request.client else "?"
-        fails = app.state.failed_logins[ip]
         now = time.time()
-        while fails and now - fails[0] > 900:
-            fails.popleft()
+        fails = recent_failures(app.state.failed_logins, ip, now)
         if len(fails) >= 5:
             log(request, s, "LOGIN_BLOCKED", actor=username.strip()[:100])
             return back(request, "/login", error="Too many attempts. Wait 15 minutes.")
         u = s.scalar(select(m.AppUser).where(m.AppUser.username == username.strip()))
-        ok = u is not None and auth.verify_password(password, u.password_hash)
+        ok = u is not None and u.disabled_at is None and auth.verify_password(password, u.password_hash)
         if ok and u.totp_secret:
             ok = auth.verify_totp(u.totp_secret, code)
         if not ok:
@@ -255,7 +293,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         fails.clear()
         request.session.clear()  # new session on login (prevents session fixation)
         request.session["user"] = u.username
-        log(request, s, "LOGIN_OK", "app_user", u.id)
+        request.session["epoch"] = u.session_epoch
+        log(request, s, "LOGIN_OK", "app_user", u.id, role=u.role)
         return RedirectResponse("/", status_code=303)
 
     @app.get("/logout")
@@ -297,7 +336,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         party = svc.get_party(s, party_id)
         rows = svc.portfolio(s, today(), BOOKS[book_of(request)], party_id=party_id)
         return render(request, "party.html", party=party, rows=rows, summary=party_summary(rows),
-                      docs=svc.documents(s, party_id=party_id), vault_problem=vault.problem)
+                      docs=svc.documents(s, party_id=party_id) if request.state.role == "OWNER" else None,
+                      vault_problem=vault.problem)
 
     @app.post("/parties/{party_id}", dependencies=[Depends(check_csrf)])
     def party_update(party_id: int, request: Request, name: str = Form(...), phone: str = Form(""),
@@ -386,7 +426,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             share_wa = wa_link(loan.party.phone, f"Hello {loan.party.name.split()[0]}, here is your loan statement "
                                                  f"(LN-{loan.id}): {new_share['url']} . The link is private and works "
                                                  f"for {new_share['days']} days.")
-        return render(request, "loan.html", docs=svc.documents(s, loan_id=loan_id), vault_problem=vault.problem,
+        return render(request, "loan.html", vault_problem=vault.problem,
+                      docs=svc.documents(s, loan_id=loan_id) if request.state.role == "OWNER" else None,
                       shares=svc.share_links(s, loan_id) if loan.direction == "GIVEN" else [],
                       new_share=new_share, share_wa=share_wa, public_url=settings.public_url,
                       now_utc=datetime.now(timezone.utc),
@@ -587,17 +628,15 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     def public_page(request: Request, name: str, status: int = 200, **ctx):
         """No session, no CSRF token, no sidebar: nothing of the owner's app leaks into it."""
-        ctx.update(request=request, today=app.state.today(),
-                   issuer={"name": settings.receipt_name, "details": settings.receipt_details})
+        ctx.setdefault("issuer", {"name": settings.receipt_name, "details": settings.receipt_details})
+        ctx.update(request=request, today=app.state.today())
         return templates.TemplateResponse(request, name, ctx, status_code=status, headers=PUBLIC_HEADERS)
 
     def open_link(request: Request, token: str, s: Session):
         """The live link for token, or a 'not available' response. Failures are rate limited per IP."""
         ip = request.client.host if request.client else "?"
         now_ts = time.time()
-        fails = app.state.failed_shares[ip]
-        while fails and now_ts - fails[0] > 900:
-            fails.popleft()
+        fails = recent_failures(app.state.failed_shares, ip, now_ts)
         if len(fails) >= 30:
             return None, public_page(request, "public_unavailable.html", 429,
                                      message="Too many attempts. Please try again later.")
@@ -616,7 +655,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         svc.record_share_view(s, link, datetime.now(timezone.utc))
         log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id)
         st = svc.borrower_statement(s, link.loan_id, app.state.today())
-        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at)
+        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at,
+                           issuer=issuer_for(s.get(m.Loan, link.loan_id).book))
 
     @app.get("/s/{token}/receipts/{receipt_id}", response_class=HTMLResponse)
     def shared_receipt(token: str, receipt_id: int, request: Request, s: Session = Depends(db)):
@@ -647,7 +687,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return back(request, f"/loans/{link.loan_id}#share", flash="Link switched off. It no longer opens.")
 
     @app.get("/documents", response_class=HTMLResponse)
-    def documents_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
+    def documents_page(request: Request, q: str = "", _: str = Depends(owner_only), s: Session = Depends(db)):
         docs = svc.documents(s)
         if q.strip():
             needle = q.strip().lower()
@@ -668,7 +708,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return back(request, referer(request, "/documents"), flash=f"“{d.title}” stored, encrypted.")
 
     @app.get("/documents/{doc_id}/file")
-    def document_file(doc_id: int, request: Request, download: int = 0, _: str = Depends(user),
+    def document_file(doc_id: int, request: Request, download: int = 0, _: str = Depends(owner_only),
                       s: Session = Depends(db)):
         from urllib.parse import quote
         d, data = svc.read_document(s, vault, doc_id)
@@ -1154,7 +1194,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                 "url": f"/documents/{d.id}/file"}
 
     @app.get("/api/documents")
-    def api_documents(party_id: int | None = None, loan_id: int | None = None, _: str = Depends(user),
+    def api_documents(party_id: int | None = None, loan_id: int | None = None, _: str = Depends(owner_only),
                       s: Session = Depends(db)):
         return [doc_json(d) for d in svc.documents(s, party_id=party_id, loan_id=loan_id)]
 

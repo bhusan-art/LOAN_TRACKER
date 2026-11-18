@@ -28,24 +28,40 @@ def cmd_create_user(args) -> None:
     if not args.password and password != getpass.getpass("Repeat password: "):
         sys.exit("passwords do not match")
     secret = None if args.no_2fa else auth.new_totp_secret()
+    role = "VIEWER" if args.viewer else "OWNER"
+    from loan_tracker import services as svc
     with session_scope() as s:
-        u = s.scalar(select(m.AppUser).where(m.AppUser.username == args.username))
-        created = u is None
-        if u is None:
-            u = m.AppUser(username=args.username, password_hash="")
-            s.add(u)
-        u.password_hash = auth.hash_password(password)
-        u.totp_secret = secret
-        s.flush()
-        from loan_tracker import services as svc
+        try:
+            u, created = svc.save_user(s, args.username, password_hash=auth.hash_password(password),
+                                       totp_secret=secret, role=role)
+        except svc.ServiceError as exc:
+            sys.exit(str(exc))
         svc.audit(s, "cli", "USER_CREATED" if created else "USER_RESET", "app_user", u.id,
-                  username=args.username, two_factor=secret is not None)
-    print(f"User '{args.username}' saved.")
+                  username=args.username, two_factor=secret is not None, role=role)
+    print(f"User '{args.username}' saved as {'a read-only viewer' if role == 'VIEWER' else 'an owner'}."
+          + ("" if created else " Their other sessions are logged out."))
     if secret:
         print("\nAdd this account to your authenticator app (Google Authenticator, Aegis, ...):")
         print(f"  Setup key : {secret}")
         print(f"  Or URI    : {auth.otpauth_uri(secret, args.username)}")
         print("You will need the 6-digit code at every login.")
+
+
+def cmd_users(args) -> None:
+    from loan_tracker import services as svc
+    with session_scope() as s:
+        if args.cmd == "list-users":
+            for u in svc.list_users(s):
+                state = "disabled" if u.disabled_at else "active"
+                print(f"{u.username:<20} {u.role.lower():<7} {state:<9} 2FA {'on' if u.totp_secret else 'OFF'}")
+            return
+        try:
+            u = svc.set_user_enabled(s, args.username, args.cmd == "enable-user")
+        except svc.ServiceError as exc:
+            sys.exit(str(exc))
+        svc.audit(s, "cli", "USER_ENABLED" if args.cmd == "enable-user" else "USER_DISABLED", "app_user", u.id,
+                  username=u.username)
+    print(f"'{args.username}' {'can log in again' if args.cmd == 'enable-user' else 'is disabled and logged out everywhere'}.")
 
 
 def cmd_run_job(args) -> None:
@@ -139,6 +155,11 @@ def main(argv=None) -> None:
     u.add_argument("username")
     u.add_argument("--password", help=argparse.SUPPRESS)
     u.add_argument("--no-2fa", action="store_true", help="skip the authenticator code (not recommended)")
+    u.add_argument("--viewer", action="store_true", help="read-only: can look at everything, change nothing")
+    sub.add_parser("list-users")
+    for name in ("disable-user", "enable-user"):
+        d = sub.add_parser(name)
+        d.add_argument("username")
     j = sub.add_parser("run-job")
     j.add_argument("--date")
     j.add_argument("--dry-run", action="store_true")
@@ -161,6 +182,8 @@ def main(argv=None) -> None:
         cmd_scheduler(args)
     elif args.cmd == "demo-data":
         cmd_demo_data(args)
+    elif args.cmd in ("list-users", "disable-user", "enable-user"):
+        cmd_users(args)
     elif args.cmd == "gen-doc-key":
         from loan_tracker.docvault import new_key
         print(f"DOCUMENT_KEY={new_key()}")

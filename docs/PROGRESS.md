@@ -115,6 +115,13 @@
   Owner: create (link shown once, WhatsApp send), list, switch off; views logged.
   PUBLIC_URL setting; receipt card shared via _receipt_doc.html. 272 tests.
 
+- Review of 15: bounded failure counters (login + links); business name on statements.
+- Phase 16 (read-only login): migration 0010 app_user role OWNER/VIEWER, disabled_at,
+  session_epoch. user() now checks the DB every request (disabled user or password
+  reset ends sessions at once) and refuses any non-GET from a viewer, pages and API;
+  documents owner-only. CLI create-user --viewer, list-users, disable/enable-user
+  (last owner protected). Viewer UI hides change controls. Route-walk test. 277 tests.
+
 ## Next step
-Deferred ideas: read-only login, application/approval workflow, official WhatsApp API.
+Deferred ideas: application/approval workflow, official WhatsApp API.
 

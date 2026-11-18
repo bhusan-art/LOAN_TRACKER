@@ -1138,6 +1138,66 @@ def loan_collections(s: Session, loan_id: int) -> tuple[list[m.CollectionActivit
 
 
 # ---------------------------------------------------------------------------
+# users and roles (Phase 16): OWNER changes everything, VIEWER only looks.
+# Managed from the command line; the web app never edits users.
+# ---------------------------------------------------------------------------
+ROLES = ("OWNER", "VIEWER")
+
+
+def save_user(s: Session, username: str, *, password_hash: str, totp_secret: str | None,
+              role: str = "OWNER") -> tuple[m.AppUser, bool]:
+    """Create a user, or reset an existing one (new password and 2FA, other sessions logged out)."""
+    if role not in ROLES:
+        raise ServiceError("role must be OWNER or VIEWER")
+    username = (username or "").strip()
+    if not username:
+        raise ServiceError("username is required")
+    u = s.scalar(select(m.AppUser).where(m.AppUser.username == username))
+    created = u is None
+    if created:
+        u = m.AppUser(username=username, password_hash=password_hash, totp_secret=totp_secret, role=role,
+                      session_epoch=1)
+        s.add(u)
+    else:
+        if u.role == "OWNER" and role == "VIEWER" and _active_owners(s) <= 1:
+            raise ServiceError("this is the only owner; create another owner first")
+        u.password_hash, u.totp_secret, u.role = password_hash, totp_secret, role
+        u.session_epoch += 1                 # every existing session of this user ends
+    s.flush()
+    return u, created
+
+
+def _active_owners(s: Session) -> int:
+    from sqlalchemy import func as _f
+    return s.scalar(select(_f.count()).select_from(m.AppUser)
+                    .where(m.AppUser.role == "OWNER", m.AppUser.disabled_at.is_(None))) or 0
+
+
+def set_user_enabled(s: Session, username: str, enabled: bool) -> m.AppUser:
+    from datetime import datetime, timezone
+    u = s.scalar(select(m.AppUser).where(m.AppUser.username == (username or "").strip()))
+    if u is None:
+        raise ServiceError(f"no user called '{username}'")
+    if not enabled:
+        if u.disabled_at is not None:
+            raise ServiceError(f"'{u.username}' is already disabled")
+        if u.role == "OWNER" and _active_owners(s) <= 1:
+            raise ServiceError("this is the only owner; it cannot be disabled")
+        u.disabled_at = datetime.now(timezone.utc)
+        u.session_epoch += 1                 # logged out everywhere at once
+    else:
+        if u.disabled_at is None:
+            raise ServiceError(f"'{u.username}' is not disabled")
+        u.disabled_at = None
+    s.flush()
+    return u
+
+
+def list_users(s: Session) -> list[m.AppUser]:
+    return list(s.scalars(select(m.AppUser).order_by(m.AppUser.username)))
+
+
+# ---------------------------------------------------------------------------
 # audit log (Phase 8): same transaction as the change, so a failed change
 # leaves no audit row and a saved change always has one
 # ---------------------------------------------------------------------------

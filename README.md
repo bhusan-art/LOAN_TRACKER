@@ -57,6 +57,17 @@ Want to try it with sample data first? `docker compose exec app python -m loan_t
 | Everything in Excel | footer → **Export CSV** |
 | Business only / personal only | the **All · Business · Personal** toggle at the top |
 
+### Read-only login (accountant, family member)
+
+```powershell
+docker compose exec app python -m loan_tracker.cli create-user accountant --viewer
+docker compose exec app python -m loan_tracker.cli list-users
+docker compose exec app python -m loan_tracker.cli disable-user accountant   # ends their access at once
+```
+A viewer sees every page but cannot change anything and cannot open documents.
+Running `create-user` again for an existing name resets the password and 2FA and logs
+that user out everywhere.
+
 ## 3. Daily digest (Telegram / email)
 
 The `scheduler` container runs the daily job at `JOB_TIME` (default 08:00 IST). Fill in
