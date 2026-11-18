@@ -94,7 +94,19 @@
   bank_txn (bank figures locked). Link/record/ignore/undo, link-all-exact, balance
   from statement. /bank pages, /api/bank/*. All /api POSTs must be JSON (CSRF). 241 tests.
 
+- Evaluation after 13: 150-loan/2,565-entry book, every page < 0.5 s, daily job
+  1.2 s. Fixed one-day interest periods (migration 0007: due start <= end; loan
+  starting the day before its due day, payoff the day after a due date).
+  tests/db/test_fuzz.py: random loans and steps through services + real DB. 244 tests.
+
+- Phase 14 (documents): cryptography added (owner approved). docvault.py AES-256-GCM,
+  nonce per file, bound to document uuid, key id header, DOCUMENT_KEY_OLD for
+  rotation, type by content (PDF/JPEG/PNG/WebP, 10 MB). Migration 0008 document
+  (record kept, one-time delete mark). Files 0600 in DOCUMENT_DIR (Docker volume);
+  removed only after the delete commits; failed uploads leave no file. Cards on
+  people/loans, /documents, view logged, no-store + sandbox headers. gen-doc-key;
+  backups include documents; key kept out of backups on purpose. 265 tests.
+
 ## Next step
-Deferred ideas: encrypted document storage, application/approval workflow,
-official WhatsApp API.
+Deferred ideas: application/approval workflow, official WhatsApp API.
 

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Documents{% endblock %}
+{% block crumb %}Documents{% endblock %}
+{% block content %}
+{% set kinds = {"ID_PROOF": "ID proof", "AGREEMENT": "Agreement", "CHEQUE": "Cheque", "PHOTO": "Photo", "OTHER": "Other"} %}
+<div class="heading">
+  <div><div class="eyebrow">Records</div><h1>Documents</h1>
+    <p class="subtitle">ID proofs, agreements and cheque photos, encrypted on disk. Add them from a person's or a loan's page.</p></div>
+  <form class="search" method="get" action="/documents">{{ icon("search") }}<input name="q" value="{{ q }}" placeholder="Title or name" aria-label="Search documents"></form>
+</div>
+{% if vault_problem %}<div class="notice" style="margin-bottom:18px">Documents are switched off: {{ vault_problem }}. Run <code>docker compose exec app python -m loan_tracker.cli gen-doc-key</code>, put the line in <code>.env</code> <b>and in your password manager</b>, then restart.</div>{% endif %}
+<div class="card">
+  {% if docs %}<div class="tablewrap"><table>
+    <tr><th>Title</th><th>Person</th><th class="hide-sm">Kind</th><th class="hide-sm">Added</th><th class="right hide-sm">Size</th><th></th></tr>
+    {% for d in docs %}<tr>
+      <td class="tdmain"><a class="linkish" href="/documents/{{ d.id }}/file" target="_blank" rel="noopener">{{ d.title }}</a><div class="tdsub">{{ d.file_name }}</div></td>
+      <td>{% if d.party %}<a class="linkish" href="/parties/{{ d.party_id }}#documents">{{ d.party.name }}</a>{% endif %}{% if d.loan_id %} <span class="tdsub"><a href="/loans/{{ d.loan_id }}#documents">LN-{{ d.loan_id }}</a></span>{% endif %}</td>
+      <td class="hide-sm"><span class="tag gray">{{ kinds.get(d.kind, d.kind) }}</span></td>
+      <td class="hide-sm">{{ d.created_at|when }}</td>
+      <td class="tdright hide-sm">{{ (d.size_bytes / 1024)|round(0)|int or 1 }} KB</td>
+      <td class="tdright"><a class="linkbtn" href="/documents/{{ d.id }}/file?download=1">Download</a></td></tr>{% endfor %}
+  </table></div>{% else %}{{ empty("No documents stored yet." if not q else "Nothing matches.", "file") }}{% endif %}
+</div>
+{% endblock %}

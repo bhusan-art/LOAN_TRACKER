@@ -357,6 +357,168 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# documents (Phase 14): AES-GCM encrypted files on disk, described in the
+# document table. The key never touches the database.
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dataclass  # noqa: E402
+
+
+@_dataclass(frozen=True)
+class DocVault:
+    directory: str
+    current: bytes | None          # key used for new files
+    keys: dict                     # key_id -> key, for reading (current + old)
+    problem: str | None = None     # why documents are unavailable, if they are
+
+    @classmethod
+    def from_settings(cls, settings) -> "DocVault":
+        from loan_tracker.docvault import key_id, parse_key
+        keys, current, problem = {}, None, None
+        try:
+            current = parse_key(settings.document_key)
+            keys[key_id(current)] = current
+        except ValueError as exc:
+            problem = str(exc)
+        if settings.document_key_old:
+            try:
+                old = parse_key(settings.document_key_old)
+                keys.setdefault(key_id(old), old)
+            except ValueError as exc:
+                problem = problem or f"DOCUMENT_KEY_OLD: {exc}"
+        return cls(settings.document_dir, current, keys, problem)
+
+    def path(self, uuid: str) -> str:
+        import os
+        return os.path.join(self.directory, f"{uuid}.ltd")
+
+
+def store_document(s: Session, vault: DocVault, *, data: bytes, file_name: str, kind: str, title: str,
+                   actor: str, party_id: int | None = None, loan_id: int | None = None) -> m.Document:
+    import hashlib
+    import os
+    import secrets as _secrets
+    from loan_tracker.docvault import KINDS, MAX_DOC_BYTES, key_id, seal, sniff
+    if vault.current is None:
+        raise ServiceError(f"documents are switched off: {vault.problem or 'DOCUMENT_KEY is not set'}")
+    if kind not in KINDS:
+        raise ServiceError("choose what kind of document this is")
+    if not data:
+        raise ServiceError("the file is empty")
+    if len(data) > MAX_DOC_BYTES:
+        raise ServiceError("the file is larger than 10 MB; scan at a lower resolution")
+    found = sniff(data)
+    if found is None:
+        raise ServiceError("only PDF, JPEG, PNG or WebP files can be stored")
+    if loan_id is not None:
+        loan = get_loan(s, loan_id)
+        party_id = party_id or loan.party_id
+        if party_id != loan.party_id:
+            raise ServiceError("that loan belongs to someone else")
+    if party_id is None:
+        raise ServiceError("attach the document to a person or a loan")
+    if s.get(m.Party, party_id) is None:
+        raise ServiceError(f"person {party_id} not found")
+    title = (title or "").strip() or os.path.splitext(file_name or "")[0].strip() or kind.replace("_", " ").title()
+    uuid = _secrets.token_hex(16)
+    doc = m.Document(uuid=uuid, party_id=party_id, loan_id=loan_id, kind=kind, title=title[:200],
+                     file_name=os.path.basename(file_name or f"document.{found[1]}")[-120:] or f"document.{found[1]}",
+                     content_type=found[0], size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                     key_id=key_id(vault.current), uploaded_by=actor or "unknown")
+    os.makedirs(vault.directory, mode=0o700, exist_ok=True)
+    tmp = vault.path(uuid) + ".tmp"
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:   # owner-only
+        f.write(seal(vault.current, data, f"document:{uuid}".encode()))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, vault.path(uuid))
+    _on_rollback(s, lambda: _remove_quietly(vault.path(uuid)))   # a failed save leaves no orphan file
+    s.add(doc)
+    s.flush()
+    return doc
+
+
+def _remove_quietly(path: str) -> None:
+    import os
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _on_commit(s: Session, fn) -> None:
+    from sqlalchemy import event
+    event.listen(s, "after_commit", lambda _s: fn(), once=True)
+
+
+def _on_rollback(s: Session, fn) -> None:
+    """Run fn if this transaction is rolled back instead of committed."""
+    from sqlalchemy import event
+    done = {"v": False}
+
+    def committed(_s):
+        done["v"] = True
+
+    def rolled_back(_s, _prev=None):
+        if not done["v"]:
+            done["v"] = True
+            fn()
+    event.listen(s, "after_commit", committed, once=True)
+    event.listen(s, "after_soft_rollback", rolled_back, once=True)
+
+
+def get_document(s: Session, doc_id: int) -> m.Document:
+    d = s.get(m.Document, doc_id)
+    if d is None:
+        raise ServiceError(f"document {doc_id} not found")
+    return d
+
+
+def read_document(s: Session, vault: DocVault, doc_id: int) -> tuple[m.Document, bytes]:
+    import hashlib
+    from loan_tracker.docvault import VaultError, open_sealed
+    d = get_document(s, doc_id)
+    if d.deleted_at is not None:
+        raise ServiceError("this document was deleted")
+    try:
+        with open(vault.path(d.uuid), "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        raise ServiceError("the stored file is missing; restore the documents folder from a backup") from None
+    try:
+        data = open_sealed(vault.keys, blob, f"document:{d.uuid}".encode())
+    except VaultError as exc:
+        raise ServiceError(str(exc)) from None
+    if hashlib.sha256(data).hexdigest() != d.sha256:
+        raise ServiceError("the stored file does not match what was uploaded")
+    return d, data
+
+
+def delete_document(s: Session, vault: DocVault, doc_id: int, actor: str) -> m.Document:
+    """Erase the encrypted file; keep the record (who uploaded, who deleted, when)."""
+    from datetime import datetime, timezone
+    d = get_document(s, doc_id)
+    if d.deleted_at is not None:
+        raise ServiceError("this document is already deleted")
+    d.deleted_at, d.deleted_by = datetime.now(timezone.utc), actor or "unknown"
+    s.flush()
+    path = vault.path(d.uuid)
+    _on_commit(s, lambda: _remove_quietly(path))      # the file goes only once the deletion is saved
+    return d
+
+
+def documents(s: Session, *, party_id: int | None = None, loan_id: int | None = None,
+              include_deleted: bool = False, limit: int = 500) -> list[m.Document]:
+    q = select(m.Document)
+    if party_id is not None:
+        q = q.where(m.Document.party_id == party_id)
+    if loan_id is not None:
+        q = q.where(m.Document.loan_id == loan_id)
+    if not include_deleted:
+        q = q.where(m.Document.deleted_at.is_(None))
+    return list(s.scalars(q.order_by(m.Document.id.desc()).limit(limit)))
+
+
+# ---------------------------------------------------------------------------
 # bank statement import (Phase 13). Money reaches the ledger only when the
 # owner records a payment from a bank line (post_entry, like any payment).
 # ---------------------------------------------------------------------------

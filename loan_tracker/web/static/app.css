@@ -89,3 +89,7 @@ form.sugg.strong{border-color:var(--brand);background:var(--brandlight)}form.sug
 form.inline select{border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:8px 10px;color:var(--text);min-width:0;flex:1 1 160px}
 label.check{display:flex;gap:8px;align-items:center;font-weight:700}
 @media(max-width:800px){.bl-actions{margin-left:0}form.sugg{flex-direction:column;align-items:stretch}}
+
+/* Phase 14: documents */
+.docs .docactions{display:flex;gap:12px;align-items:center}.linkbtn.danger{color:var(--red)}
+.docs .cardhead .tiny svg{width:12px;height:12px;vertical-align:-2px}

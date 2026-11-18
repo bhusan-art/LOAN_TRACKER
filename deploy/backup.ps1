@@ -17,8 +17,20 @@ if ((Test-Path $sevenZip) -and $env:BACKUP_PASSPHRASE) {
 } else {
     Write-Host "wrote $sql (not encrypted: install 7-Zip and set BACKUP_PASSPHRASE)"
 }
+# documents (already AES-encrypted). docker compose cp, not a pipe: PowerShell pipes corrupt binary data.
+$docs = "backups\loan_tracker_docs_$stamp"
+docker compose cp app:/data/documents $docs
+if ((Test-Path $sevenZip) -and $env:BACKUP_PASSPHRASE) {
+    & $sevenZip a -t7z -mhe=on "-p$($env:BACKUP_PASSPHRASE)" "$docs.7z" $docs | Out-Null
+    Remove-Item -Recurse $docs
+    Write-Host "wrote $docs.7z"
+} else {
+    Write-Host "wrote $docs (files are encrypted with DOCUMENT_KEY; names are visible)"
+}
+# NOT in any backup: DOCUMENT_KEY. Keep it in your password manager.
 Get-ChildItem backups -Filter "loan_tracker_*" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-60) } | Remove-Item
 
 # RESTORE into an empty database:
 #   docker compose exec -T db createdb -U loan_tracker loan_tracker_restore
 #   Get-Content backups\FILE.sql | docker compose exec -T db psql -U loan_tracker -d loan_tracker_restore
+#   docker compose cp backups\loan_tracker_docs_STAMP\. app:/data/documents   (after unpacking the .7z)

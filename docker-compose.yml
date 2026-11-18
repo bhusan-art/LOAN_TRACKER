@@ -31,6 +31,8 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"   # set APP_PORT in .env if 8000 is taken
+    volumes:
+      - documents:/data/documents            # encrypted document files (back these up too)
 
   scheduler:
     build: .
@@ -47,3 +49,4 @@ services:
 
 volumes:
   pgdata:
+  documents:

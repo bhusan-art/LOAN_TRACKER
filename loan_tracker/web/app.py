@@ -51,6 +51,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.state.maker = maker or session_factory(settings.database_url)
     app.state.today = today_fn or (lambda: clock_today(settings))
     app.state.failed_logins = defaultdict(deque)
+    vault = svc.DocVault.from_settings(settings)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
     @app.middleware("http")
@@ -294,7 +295,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def party_page(party_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
         party = svc.get_party(s, party_id)
         rows = svc.portfolio(s, today(), BOOKS[book_of(request)], party_id=party_id)
-        return render(request, "party.html", party=party, rows=rows, summary=party_summary(rows))
+        return render(request, "party.html", party=party, rows=rows, summary=party_summary(rows),
+                      docs=svc.documents(s, party_id=party_id), vault_problem=vault.problem)
 
     @app.post("/parties/{party_id}", dependencies=[Depends(check_csrf)])
     def party_update(party_id: int, request: Request, name: str = Form(...), phone: str = Form(""),
@@ -374,7 +376,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         missing = len(svc.payments_without_receipt(s, loan_id)) if loan.direction == "GIVEN" else 0
         live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else res.loan_status
         can_close = loan.direction == "GIVEN" and live_status in ("CLOSED", "SETTLED")
-        return render(request, "loan.html", loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
+        return render(request, "loan.html", docs=svc.documents(s, loan_id=loan_id), vault_problem=vault.problem,
+                      loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
                       links=links, others=others, acts=acts, proms=proms, wa=wa, rcpts=rcpts,
                       missing_receipts=missing, can_close=can_close)
 
@@ -561,6 +564,48 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             except svc.ServiceError as exc:
                 error = str(exc)
         return render(request, "simulate.html", form=form, loans=loans, result=result, new=new, sim_error=error)
+
+    @app.get("/documents", response_class=HTMLResponse)
+    def documents_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
+        docs = svc.documents(s)
+        if q.strip():
+            needle = q.strip().lower()
+            docs = [d for d in docs if needle in d.title.lower() or (d.party and needle in d.party.name.lower())]
+        return render(request, "documents.html", docs=docs, q=q, vault_problem=vault.problem)
+
+    @app.post("/documents/upload", dependencies=[Depends(check_csrf)])
+    async def document_upload(request: Request, file: UploadFile = File(...), kind: str = Form("OTHER"),
+                              title: str = Form(""), party_id: str = Form(""), loan_id: str = Form(""),
+                              username: str = Depends(user), s: Session = Depends(db)):
+        from loan_tracker.docvault import MAX_DOC_BYTES
+        data = await file.read(MAX_DOC_BYTES + 1)
+        d = svc.store_document(s, vault, data=data, file_name=file.filename or "", kind=kind, title=title,
+                               actor=username, party_id=int(party_id) if party_id.isdigit() else None,
+                               loan_id=int(loan_id) if loan_id.isdigit() else None)
+        log(request, s, "DOC_UPLOADED", "document", d.id, name=d.title, type=d.kind, loan_id=d.loan_id,
+            note=f"{d.size_bytes // 1024 or 1} KB")
+        return back(request, referer(request, "/documents"), flash=f"“{d.title}” stored, encrypted.")
+
+    @app.get("/documents/{doc_id}/file")
+    def document_file(doc_id: int, request: Request, download: int = 0, _: str = Depends(user),
+                      s: Session = Depends(db)):
+        from urllib.parse import quote
+        d, data = svc.read_document(s, vault, doc_id)
+        log(request, s, "DOC_VIEWED", "document", d.id, name=d.title, loan_id=d.loan_id)
+        disposition = "attachment" if download else "inline"
+        headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(d.file_name)}",
+                   "Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff",
+                   "Referrer-Policy": "no-referrer",
+                   # images open in a locked-down sandbox; the browser's own PDF viewer needs plugins
+                   "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
+                   + ("; sandbox" if d.content_type.startswith("image/") else "; object-src 'self'")}
+        return Response(content=data, media_type=d.content_type, headers=headers)
+
+    @app.post("/documents/{doc_id}/delete", dependencies=[Depends(check_csrf)])
+    def document_delete(doc_id: int, request: Request, username: str = Depends(user), s: Session = Depends(db)):
+        d = svc.delete_document(s, vault, doc_id, username)
+        log(request, s, "DOC_DELETED", "document", d.id, name=d.title, loan_id=d.loan_id)
+        return back(request, referer(request, "/documents"), flash=f"“{d.title}” deleted; the file is erased.")
 
     @app.get("/bank", response_class=HTMLResponse)
     def bank_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -1020,6 +1065,17 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         t = svc.undo_bank_txn(s, txn_id)
         log(request, s, "BANK_UNDONE", "bank_txn", t.id, via="api")
         return txn_json(t)
+
+    def doc_json(d) -> dict:
+        return {"id": d.id, "party_id": d.party_id, "loan_id": d.loan_id, "kind": d.kind, "title": d.title,
+                "file_name": d.file_name, "content_type": d.content_type, "size_bytes": d.size_bytes,
+                "sha256": d.sha256, "uploaded_by": d.uploaded_by, "created_at": d.created_at.isoformat(),
+                "url": f"/documents/{d.id}/file"}
+
+    @app.get("/api/documents")
+    def api_documents(party_id: int | None = None, loan_id: int | None = None, _: str = Depends(user),
+                      s: Session = Depends(db)):
+        return [doc_json(d) for d in svc.documents(s, party_id=party_id, loan_id=loan_id)]
 
     @app.get("/api/receipts")
     def api_receipts(loan_id: int | None = None, q: str = "", _: str = Depends(user), s: Session = Depends(db)):

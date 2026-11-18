@@ -29,6 +29,16 @@ funds which loan, and a daily Telegram/email digest of what to pay and collect.
    `docker compose up -d`. On Windows, `netsh interface ipv4 show excludedportrange protocol=tcp`
    lists ports Windows has reserved.
 
+**Documents (ID proofs, agreements, cheque photos)** are stored encrypted. They stay
+switched off until you create a key:
+```powershell
+docker compose exec app python -m loan_tracker.cli gen-doc-key   # prints DOCUMENT_KEY=...
+```
+Put that line in `.env` **and in your password manager**, then `docker compose up -d`.
+The key is not in any backup on purpose: **if you lose it, the documents cannot be opened.**
+To change it later, move the old value to `DOCUMENT_KEY_OLD` and set a new `DOCUMENT_KEY`
+(old files stay readable; new ones use the new key).
+
 Want to try it with sample data first? `docker compose exec app python -m loan_tracker.cli demo-data`
 (creates the worked examples A–C; names end in "(demo)").
 
@@ -71,7 +81,10 @@ On the phone, use the browser's **Add to Home screen** to install it like an app
 
 - Windows: schedule `deploy\backup.ps1` daily in Task Scheduler (7-Zip + `BACKUP_PASSPHRASE` encrypts it).
 - Linux server: cron `deploy/backup.sh` (gpg-encrypted, keeps 60 days).
+- Both scripts back up the database **and** the documents folder.
 - Copy the `backups` folder **offsite**, and test a restore once a month (commands are inside the scripts).
+- Keep `DOCUMENT_KEY` (and `BACKUP_PASSPHRASE`) in your password manager, not only in `.env`:
+  a backup of the documents is useless without the key.
 
 ## 6. Development
 

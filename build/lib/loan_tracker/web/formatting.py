@@ -103,4 +103,49 @@ ACTION_LABELS = {
     "ENTRY_REVERSED": ("Entry reversed", "orange"), "STATUS_CHANGED": ("Status changed", "orange"),
     "FUNDING_LINKED": ("Funding linked", "purple"), "USER_CREATED": ("User created", "gray"),
     "USER_RESET": ("Login reset", "orange"),
+    "CONTACT_LOGGED": ("Contact logged", "purple"), "PROMISE_MADE": ("Promise made", "purple"),
+    "PROMISE_CANCELLED": ("Promise cancelled", "orange"),
+    "RECEIPTS_ISSUED": ("Receipts issued", "purple"),
+    "CASH_ACCOUNT_ADDED": ("Account added", "purple"), "CASH_BALANCE_SET": ("Balance updated", "gray"),
+    "CASH_ACCOUNT_CLOSED": ("Account closed", "orange"), "CASH_ACCOUNT_REOPENED": ("Account reopened", "purple"),
+    "PLAN_ADDED": ("Plan added", "purple"), "PLAN_CANCELLED": ("Plan cancelled", "orange"),
+    "BANK_IMPORTED": ("Statement imported", "purple"), "BANK_LINKED": ("Bank line linked", "green"),
+    "BANK_IGNORED": ("Bank line ignored", "gray"), "BANK_UNDONE": ("Bank line reopened", "orange"),
+    "DOC_UPLOADED": ("Document added", "purple"), "DOC_VIEWED": ("Document opened", "gray"),
+    "DOC_DELETED": ("Document deleted", "red"),
 }
+
+KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}
+OUTCOME_LABELS = {"REACHED": ("Spoke to them", "gray"), "NO_ANSWER": ("No answer", "orange"),
+                  "PROMISED": ("Promised to pay", "purple"), "DISPUTED": ("Disputed", "red"),
+                  "PAID": ("Said they paid", "green"), "OTHER": ("Other", "gray")}
+PROMISE_LABELS = {"PENDING": ("Pending", "purple"), "KEPT": ("Kept", "green"), "KEPT_LATE": ("Kept late", "orange"),
+                  "BROKEN": ("Broken", "red"), "CANCELLED": ("Cancelled", "gray")}
+
+
+def balance_chart(opening: int, start, end, series: dict, buffer_paise: int = 0,
+                  width: int = 640, height: int = 210, pad: int = 14) -> dict:
+    """Step lines of a running balance over [start, end] for each named series
+    (name -> list of (day, running_paise)); handles negative balances."""
+    values = [opening, 0, buffer_paise] + [v for pts in series.values() for _, v in pts]
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        hi = lo + 1
+    span = max(1, (end - start).days)
+
+    def x(d) -> float:
+        return round(pad + (width - 2 * pad) * max(0, min(span, (d - start).days)) / span, 1)
+
+    def y(v: int) -> float:
+        return round(pad + (height - 2 * pad) * (hi - v) / (hi - lo), 1)
+
+    lines = {}
+    for name, pts in series.items():
+        cur, path = opening, [f"{x(start)},{y(opening)}"]
+        for d, v in pts:
+            path += [f"{x(d)},{y(cur)}", f"{x(d)},{y(v)}"]
+            cur = v
+        path.append(f"{x(end)},{y(cur)}")
+        lines[name] = " ".join(path)
+    return {"lines": lines, "zero": y(0), "buffer": y(buffer_paise) if buffer_paise else None,
+            "width": width, "height": height, "hi": hi, "lo": lo, "below_zero": lo < 0}
