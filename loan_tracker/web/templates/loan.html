@@ -184,5 +184,33 @@
     {% endfor %}
   </div>
 </div>
+{% if loan.direction == "GIVEN" %}
+<div class="card" id="share" style="margin-top:19px">
+  <div class="cardhead"><h2>Statement link for {{ loan.party.name.split()[0] }}</h2><span class="muted tiny">Read-only · their loan only · every view is logged</span></div>
+  {% if new_share %}
+  <div class="sharebox">
+    <b>New link. Copy it now: it is shown only once.</b>
+    <input id="sharelink" value="{{ new_share.url }}" readonly onfocus="this.select()" aria-label="Statement link">
+    <div class="row">
+      <button class="btn sm secondary" type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('sharelink').value).then(function(){ this.textContent = 'Copied'; }.bind(this))">Copy</button>
+      {% if share_wa %}<a class="btn sm wa" href="{{ share_wa }}" target="_blank" rel="noopener">{{ icon("chat") }}Send on WhatsApp</a>{% endif %}
+    </div>
+    {% if not public_url %}<p class="tiny" style="margin:10px 0 0">PUBLIC_URL is not set, so this link uses the address you are on now. {{ loan.party.name.split()[0] }} can only open it if the app is reachable from the internet (README §4). Set PUBLIC_URL in .env to your https address.</p>{% endif %}
+  </div>{% endif %}
+  {% for l in shares %}
+  {% set state = "Switched off" if l.revoked_at else ("Expired" if l.expires_at <= now_utc else "Active") %}
+  <div class="metricrow"><span><span class="tag {{ 'green' if state == 'Active' else 'gray' }}">{{ state }}</span>
+      made {{ l.created_at|when }} · {{ "expires" if state == "Active" else "ran to" }} {{ l.expires_at|when }}</span>
+    <b>{{ l.view_count }} view{{ "s" if l.view_count != 1 }}{% if l.last_viewed_at %} · last {{ l.last_viewed_at|when }}{% endif %}
+      {% if state == "Active" %}<form method="post" action="/share/{{ l.id }}/revoke" style="display:inline" onsubmit="return confirm('Switch this link off? It stops working at once.')"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="linkbtn danger">Switch off</button></form>{% endif %}</b></div>
+  {% endfor %}
+  <form method="post" action="/loans/{{ loan.id }}/share" class="inline" style="margin-top:12px">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <select name="days" aria-label="How long the link works"><option value="7">Works for 7 days</option><option value="30" selected>Works for 30 days</option><option value="90">Works for 90 days</option></select>
+    <button class="btn sm">{{ icon("link") }}Create link</button>
+  </form>
+  <p class="tiny muted" style="margin-top:8px">They see what is due, the next due date, the amount to close the loan, their payments and receipts. Not your notes, other loans or books.</p>
+</div>
+{% endif %}
 <div style="margin-top:19px">{{ documents_card(docs, party_id=loan.party_id, loan_id=loan.id, vault_problem=vault_problem) }}</div>
 {% endblock %}

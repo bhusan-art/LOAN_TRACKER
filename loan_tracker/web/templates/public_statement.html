@@ -1,0 +1,30 @@
+{% extends "public_base.html" %}
+{% from "_ui.html" import icon, stat %}
+{% block content %}
+<div class="heading"><div><div class="eyebrow">Loan statement · LN-{{ st.loan_id }}</div><h1>Hello {{ st.borrower.split()[0] }}</h1>
+  <p class="subtitle">Loan of {{ st.principal_paise|inr }} given on {{ st.start_date|dmy }} at {{ st.rate|pct }} {{ "a month" if st.rate_unit == "PER_MONTH" else "a year" }}.</p></div></div>
+{% if st.closed %}<div class="notice" style="margin-bottom:18px">This loan is closed. Nothing is due. Thank you.</div>
+{% elif st.overdue_paise %}<div class="alert red" style="margin-bottom:18px">{{ st.overdue_paise|inr }} is overdue{% if st.overdue_since %} since {{ st.overdue_since|dmy }}{% endif %}. Please pay at the earliest.</div>{% endif %}
+<div class="stats">
+  {{ stat("Due now", (st.interest_due_paise + st.penalty_due_paise)|inr, "interest" ~ (" and late fee" if st.penalty_due_paise else "") ~ " not yet paid", "clock") }}
+  {{ stat("Next interest", st.next_due_paise|inr if st.next_due_date else "—", ("on " ~ (st.next_due_date|dmy)) if st.next_due_date else "nothing scheduled", "calendar") }}
+  {{ stat("Principal outstanding", st.principal_outstanding_paise|inr, "of " ~ (st.principal_paise|inr), "wallet") }}
+  {{ stat("To close the loan today", st.payoff_paise|inr, "principal + interest to today", "check") }}
+</div>
+<div class="two equal">
+  <div class="card">
+    <div class="cardhead"><h2>Your payments</h2></div>
+    {% for p in st.payments %}
+    <div class="metricrow"><span>{{ p.entry_date|dmy }}{% if p.mode %} · {{ {"CASH": "cash", "UPI": "UPI", "BANK": "bank"}.get(p.mode, p.mode) }}{% endif %}</span>
+      <b class="num">{{ p.amount_paise|inr }}{% if p.receipt_id %} · <a class="linkish" href="{{ base }}/receipts/{{ p.receipt_id }}">{{ p.receipt_number }}</a>{% endif %}</b></div>
+    {% else %}<p class="muted">No payments yet.</p>{% endfor %}
+  </div>
+  <div class="card">
+    <div class="cardhead"><h2>Interest dues</h2></div>
+    {% for d in st.dues %}
+    <div class="metricrow"><span>{{ d.due_date|dmy }}</span>
+      <b class="num">{{ d.interest_paise|inr }} {% if d.status == "PAID" %}<span class="tag green">Paid</span>{% elif d.status == "WAIVED" %}<span class="tag gray">Waived</span>{% elif d.status == "OVERDUE" %}<span class="tag red">{{ d.outstanding_paise|inr }} due</span>{% elif d.status == "PARTIAL" %}<span class="tag orange">{{ d.outstanding_paise|inr }} left</span>{% else %}<span class="tag gray">Upcoming</span>{% endif %}</b></div>
+    {% else %}<p class="muted">No interest has fallen due yet.</p>{% endfor %}
+  </div>
+</div>
+{% endblock %}

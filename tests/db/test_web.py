@@ -228,7 +228,9 @@ def test_collections_pages_and_api(client):
     assert "Contact logged" in log and "Promise made" in log and "Promise cancelled" in log
 
 
-PUBLIC = {"/healthz", "/manifest.webmanifest", "/sw.js", "/login", "/logout", "/book/{name}"}
+PUBLIC = {"/healthz", "/manifest.webmanifest", "/sw.js", "/login", "/logout", "/book/{name}",
+          # borrower statement links: no login, the unguessable token is the key (tested separately)
+          "/s/{token}", "/s/{token}/receipts/{receipt_id}"}
 
 
 def test_every_route_needs_login(client):
@@ -517,3 +519,60 @@ def test_documents_switched_off_without_key(client):
     login(client)
     page = client.get("/documents").text
     assert "Documents are switched off: DOCUMENT_KEY is not set" in page and "gen-doc-key" in page
+
+
+
+def test_borrower_statement_link(client, s):
+    login(client)
+    pid = client.post("/api/parties", json={"name": "Ravi Kumar", "phone": "98480 12345",
+                                            "notes": "PRIVATE-NOTE owes others"}).json()["id"]
+    lid = client.post("/api/loans", json={"party_id": pid, "direction": "GIVEN", "book": "BUSINESS",
+                                          "principal_paise": 10_000_000, "start_date": "2026-01-01", "rate": "2",
+                                          "due_day": 1, "collateral": "gold chain"}).json()["id"]
+    client.post(f"/api/loans/{lid}/entries", json={"type": "PAYMENT", "amount_paise": 200_000, "entry_date": "2026-02-01"})
+    client.post(f"/api/loans/{lid}/contacts", json={"outcome": "PROMISED", "note": "CALL-NOTE wife unwell",
+                                                    "promise_amount_paise": 100, "promise_date": "2026-04-05",
+                                                    "contact_date": "2026-03-30"})
+    other = client.post("/api/parties", json={"name": "Zeta Other"}).json()["id"]
+    olid = client.post("/api/loans", json={"party_id": other, "direction": "GIVEN", "book": "PERSONAL",
+                                           "principal_paise": 500_000, "start_date": "2026-01-01", "rate": "3"}).json()["id"]
+    client.post(f"/api/loans/{olid}/entries", json={"type": "PAYMENT", "amount_paise": 100, "entry_date": "2026-02-01"})
+    other_receipt = [r for r in client.get("/api/receipts").json() if r["loan_id"] == olid][0]["id"]
+
+    r = post(client, f"/loans/{lid}/share", {"days": "30"}, page=f"/loans/{lid}")
+    m_ = __import__("re").search(r'value="(http[^"]+/s/([A-Za-z0-9_-]+))"', r.text)
+    assert m_ and "shown only once" in r.text and "https://wa.me/919848012345" in r.text
+    assert m_.group(1).startswith("http://testserver/s/")         # PUBLIC_URL unset: the current address
+    token = m_.group(2)
+    assert token not in client.get(f"/loans/{lid}").text          # shown once only
+
+    anon = TestClient(client.app)                                 # the borrower: no login, no cookie
+    page = anon.get(f"/s/{token}")
+    assert page.status_code == 200 and "Hello Ravi" in page.text and "LN-" in page.text
+    assert "₹2,000.00" in page.text and "RCPT-2026-" in page.text
+    for secret in ("PRIVATE-NOTE", "CALL-NOTE", "Zeta Other", "Business", "gold chain", "98480", "csrf"):
+        assert secret not in page.text, secret
+    assert "set-cookie" not in page.headers
+    h = page.headers
+    assert h["cache-control"].startswith("no-store") and "noindex" in h["x-robots-tag"]
+    assert "default-src 'none'" in h["content-security-policy"] and h["referrer-policy"] == "no-referrer"
+    rid = [x for x in client.get("/api/receipts").json() if x["loan_id"] == lid][0]["id"]
+    assert "Rupees Two Thousand Only" in anon.get(f"/s/{token}/receipts/{rid}").text
+    assert anon.get(f"/s/{token}/receipts/{other_receipt}").status_code == 404     # not their receipt
+    assert anon.get(f"/loans/{lid}", follow_redirects=False).status_code in (302, 303)  # the app itself stays closed
+
+    # owner sees the views; switching off works at once
+    loanpage = client.get(f"/loans/{lid}").text
+    assert "1 view " in loanpage and "Active" in loanpage      # statement opens count; receipt opens are in the log
+    from sqlalchemy import select
+    link_id = s.scalar(select(m.ShareLink.id).where(m.ShareLink.loan_id == lid))
+    post(client, f"/share/{link_id}/revoke", {}, page=f"/loans/{lid}")
+    gone = anon.get(f"/s/{token}")
+    assert gone.status_code == 410 and "switched off" in gone.text and "Hello Ravi" not in gone.text
+    assert "Borrower viewed" in client.get("/activity").text
+
+
+def test_statement_link_guessing_is_limited(client):
+    anon = TestClient(client.app)
+    codes = [anon.get(f"/s/guess{i:04d}").status_code for i in range(32)]
+    assert codes[:30] == [404] * 30 and codes[-1] == 429

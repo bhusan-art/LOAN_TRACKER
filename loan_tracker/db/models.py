@@ -307,3 +307,18 @@ class Document(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_by: Mapped[str | None] = mapped_column(Text)
     party: Mapped["Party | None"] = relationship(lazy="joined")
+
+
+class ShareLink(Base):
+    """Borrower statement link. Only the token's hash is stored (DB trigger limits updates)."""
+    __tablename__ = "share_link"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(Text)
+    loan_id: Mapped[int] = mapped_column(ID, ForeignKey("loan.id"))
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(Text)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

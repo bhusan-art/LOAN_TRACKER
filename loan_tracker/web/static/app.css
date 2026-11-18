@@ -93,3 +93,12 @@ label.check{display:flex;gap:8px;align-items:center;font-weight:700}
 /* Phase 14: documents */
 .docs .docactions{display:flex;gap:12px;align-items:center}.linkbtn.danger{color:var(--red)}
 .docs .cardhead .tiny svg{width:12px;height:12px;vertical-align:-2px}
+
+/* Phase 15: borrower statement (public, no sidebar) */
+body.public{display:block;background:var(--bg)}
+.publicmain{max-width:1040px;margin:0 auto;padding:26px 20px 40px}
+.publicbrand{font-size:13px;margin-bottom:22px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.publicfoot{margin-top:28px;text-align:center}
+.sharebox{border:1px solid var(--brand);background:var(--brandlight);border-radius:14px;padding:16px;margin-bottom:18px}
+.sharebox input{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 10px;background:var(--surface);color:var(--text);font-family:ui-monospace,monospace;font-size:12px}
+.sharebox .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}

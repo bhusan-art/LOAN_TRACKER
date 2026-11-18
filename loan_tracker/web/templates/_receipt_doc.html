@@ -1,0 +1,33 @@
+{# printable receipt card; needs r, loan, words, issuer #}
+<div class="card doc {{ 'cancelled' if r.cancelled_at }}">
+  {% if r.cancelled_at %}<div class="stamp">CANCELLED</div>{% endif %}
+  <div class="dochead">
+    <div>{% if issuer.name %}<div class="docname">{{ issuer.name }}</div>{% endif %}
+      {% if issuer.details %}<div class="muted">{{ issuer.details }}</div>{% endif %}</div>
+    <div class="docmeta"><div class="doctitle">Payment receipt</div>
+      <div><b>{{ r.number }}</b></div><div class="muted">Date: {{ r.issued_on|dmy }}</div></div>
+  </div>
+  <div class="docbody">
+    <p>Received with thanks from <b>{{ loan.party.name }}</b>{% if loan.party.phone %} ({{ loan.party.phone }}){% endif %}
+      the sum of</p>
+    <div class="docamount num">{{ r.amount_paise|inr }}</div>
+    <p class="docwords">{{ words }}</p>
+    <p>on <b>{{ r.payment_date|dmy }}</b> by <b>{{ {"CASH": "cash", "UPI": "UPI", "BANK": "bank transfer"}.get(r.payment_mode, "cash") }}</b>{% if r.reference %} (ref. {{ r.reference }}){% endif %},
+      towards loan <b>LN-{{ loan.id }}</b> of {{ loan.principal_paise|inr(decimals=False) }} given on {{ loan.start_date|dmy }}.</p>
+  </div>
+  <div class="two equal docsplit">
+    <div><h3>Applied to</h3>
+      {% if r.penalty_paise %}<div class="metricrow"><span>Late penalty</span><b class="num">{{ r.penalty_paise|inr }}</b></div>{% endif %}
+      <div class="metricrow"><span>Interest</span><b class="num">{{ r.interest_paise|inr }}</b></div>
+      <div class="metricrow"><span>Principal</span><b class="num">{{ r.principal_paise|inr }}</b></div>
+      {% if r.credit_paise %}<div class="metricrow"><span>Held as credit (overpaid)</span><b class="num">{{ r.credit_paise|inr }}</b></div>{% endif %}
+      <div class="metricrow"><span><b>Total</b></span><b class="num">{{ r.amount_paise|inr }}</b></div></div>
+    <div><h3>Balance after this payment</h3>
+      <div class="metricrow"><span>Principal outstanding</span><b class="num">{{ r.principal_left_paise|inr }}</b></div>
+      <div class="metricrow"><span>Interest due and unpaid</span><b class="num">{{ r.interest_left_paise|inr }}</b></div>
+      <p class="tiny muted" style="margin-top:10px">As on {{ r.payment_date|dmy }}.{% if r.principal_left_paise %} Interest keeps running on the principal outstanding.{% else %} The principal is fully repaid.{% endif %}</p></div>
+  </div>
+  {% if r.cancelled_at %}<p class="docnote red">This receipt was cancelled: {{ r.cancel_reason }}.</p>{% endif %}
+  <div class="docfoot"><div class="muted tiny">Computer-generated receipt · {{ r.number }}</div>
+    <div class="sign">Authorised signature</div></div>
+</div>

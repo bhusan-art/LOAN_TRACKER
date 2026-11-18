@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from dataclasses import dataclass as _dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
@@ -357,10 +358,146 @@ def portfolio(s: Session, as_of: date, book: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# borrower statement links (Phase 15). The token is shown once; only its
+# SHA-256 hash is stored. The borrower sees a small, separate view of their own
+# loan (BorrowerStatement) - never the owner's notes, other loans or books.
+# ---------------------------------------------------------------------------
+SHARE_DAYS = (7, 30, 90)
+
+
+class LinkUnavailable(ServiceError):
+    """The statement link is unknown, expired or revoked (message is safe to show)."""
+
+
+def _token_hash(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(("loan-tracker share link\x00" + token).encode()).hexdigest()
+
+
+def create_share_link(s: Session, loan_id: int, *, days: int, actor: str, now) -> tuple[m.ShareLink, str]:
+    import secrets as _secrets
+    from datetime import timedelta as _td
+    loan = get_loan(s, loan_id)
+    if loan.direction != "GIVEN":
+        raise ServiceError("statement links are for borrowers (loans you gave)")
+    if days not in SHARE_DAYS:
+        raise ServiceError("a link can last 7, 30 or 90 days")
+    token = _secrets.token_urlsafe(24)                    # 192 random bits
+    link = m.ShareLink(token_hash=_token_hash(token), loan_id=loan.id, created_by=actor or "unknown",
+                       created_at=now, expires_at=now + _td(days=days))
+    s.add(link)
+    s.flush()
+    return link, token
+
+
+def resolve_share_link(s: Session, token: str, now) -> m.ShareLink:
+    import re as _re
+    if not token or len(token) > 64 or not _re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise LinkUnavailable("This link is not valid.")
+    link = s.scalar(select(m.ShareLink).where(m.ShareLink.token_hash == _token_hash(token)))
+    if link is None:
+        raise LinkUnavailable("This link is not valid.")
+    if link.revoked_at is not None:
+        raise LinkUnavailable("This link was switched off. Please ask for a new one.")
+    if link.expires_at <= now:
+        raise LinkUnavailable("This link has expired. Please ask for a new one.")
+    return link
+
+
+def record_share_view(s: Session, link: m.ShareLink, now) -> None:
+    link.view_count += 1
+    link.last_viewed_at = now
+    s.flush()
+
+
+def revoke_share_link(s: Session, link_id: int, *, actor: str, now) -> m.ShareLink:
+    link = s.get(m.ShareLink, link_id)
+    if link is None:
+        raise ServiceError(f"link {link_id} not found")
+    if link.revoked_at is not None:
+        raise ServiceError("this link is already switched off")
+    link.revoked_at, link.revoked_by = now, actor or "unknown"
+    s.flush()
+    return link
+
+
+def share_links(s: Session, loan_id: int) -> list[m.ShareLink]:
+    return list(s.scalars(select(m.ShareLink).where(m.ShareLink.loan_id == loan_id)
+                          .order_by(m.ShareLink.id.desc())))
+
+
+@_dataclass(frozen=True)
+class BorrowerDue:
+    due_date: date
+    interest_paise: int
+    paid_paise: int
+    outstanding_paise: int
+    status: str
+
+
+@_dataclass(frozen=True)
+class BorrowerPayment:
+    entry_date: date
+    amount_paise: int
+    mode: str | None
+    receipt_id: int | None
+    receipt_number: str | None
+
+
+@_dataclass(frozen=True)
+class BorrowerStatement:
+    """Everything a borrower may see about their own loan, and nothing else."""
+    loan_id: int
+    borrower: str
+    start_date: date
+    principal_paise: int
+    rate: Decimal
+    rate_unit: str
+    principal_outstanding_paise: int
+    interest_due_paise: int
+    penalty_due_paise: int
+    payoff_paise: int
+    overdue_paise: int
+    overdue_since: date | None
+    next_due_date: date | None
+    next_due_paise: int
+    closed: bool
+    dues: tuple
+    payments: tuple
+
+
+def borrower_statement(s: Session, loan_id: int, as_of: date) -> BorrowerStatement:
+    loan = get_loan(s, loan_id)
+    res = compute_loan(loan, as_of)
+    b = res.balances
+    late = [d for d in res.dues if d.status == "OVERDUE"]
+    reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
+    rcpts = {r.ledger_entry_id: r for r in s.scalars(
+        select(m.Receipt).where(m.Receipt.loan_id == loan.id, m.Receipt.cancelled_at.is_(None)))}
+    pays = tuple(BorrowerPayment(e.entry_date, e.amount_paise, e.payment_mode,
+                                 rcpts[e.id].id if e.id in rcpts else None,
+                                 rcpts[e.id].number if e.id in rcpts else None)
+                 for e in sorted(loan.entries, key=lambda e: (e.entry_date, e.id), reverse=True)
+                 if e.type == "PAYMENT" and e.id not in reversed_ids)
+    dues = tuple(BorrowerDue(d.due.due_date, d.due.interest_paise, d.paid_paise, d.outstanding_paise, d.status)
+                 for d in sorted(res.dues, key=lambda d: d.due.due_date, reverse=True)[:12])
+    owner_closed = loan.status in ("SETTLED", "WRITTEN_OFF")
+    nd = res.projected_due
+    return BorrowerStatement(
+        loan_id=loan.id, borrower=loan.party.name, start_date=loan.start_date, principal_paise=loan.principal_paise,
+        rate=loan.rate, rate_unit=loan.rate_unit, principal_outstanding_paise=b.principal_outstanding_paise,
+        interest_due_paise=b.interest_outstanding_paise, penalty_due_paise=b.penalty_outstanding_paise,
+        payoff_paise=0 if owner_closed else b.payoff_today_paise,
+        overdue_paise=sum(d.outstanding_paise for d in late), overdue_since=late[0].due.due_date if late else None,
+        next_due_date=None if owner_closed or not nd else nd.due_date,
+        next_due_paise=0 if owner_closed or not nd else nd.interest_paise,
+        closed=owner_closed or res.loan_status == "CLOSED", dues=dues, payments=pays[:24])
+
+
+# ---------------------------------------------------------------------------
 # documents (Phase 14): AES-GCM encrypted files on disk, described in the
 # document table. The key never touches the database.
 # ---------------------------------------------------------------------------
-from dataclasses import dataclass as _dataclass  # noqa: E402
 
 
 @_dataclass(frozen=True)

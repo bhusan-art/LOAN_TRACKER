@@ -77,6 +77,12 @@ when the job last ran.
 
 On the phone, use the browser's **Add to Home screen** to install it like an app.
 
+**Statement links for borrowers** (loan page → *Statement link*) only open for a borrower if
+the app is reachable from the internet: run it on a server behind `deploy/Caddyfile` (HTTPS)
+and set `PUBLIC_URL=https://your-domain` in `.env`. With Tailscale only you and your devices
+can open them. A link shows that borrower's own loan, read-only, and stops working when it
+expires or when you switch it off.
+
 ## 5. Backups (do this)
 
 - Windows: schedule `deploy\backup.ps1` daily in Task Scheduler (7-Zip + `BACKUP_PASSPHRASE` encrypts it).

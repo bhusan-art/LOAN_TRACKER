@@ -8,7 +8,7 @@ import secrets
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Iterator
@@ -51,6 +51,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     app.state.maker = maker or session_factory(settings.database_url)
     app.state.today = today_fn or (lambda: clock_today(settings))
     app.state.failed_logins = defaultdict(deque)
+    app.state.failed_shares = defaultdict(deque)
     vault = svc.DocVault.from_settings(settings)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
@@ -376,7 +377,19 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         missing = len(svc.payments_without_receipt(s, loan_id)) if loan.direction == "GIVEN" else 0
         live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else res.loan_status
         can_close = loan.direction == "GIVEN" and live_status in ("CLOSED", "SETTLED")
+        new_share = request.session.pop("new_share", None)
+        if new_share and new_share.get("loan_id") != loan_id:
+            new_share = None
+        share_wa = None
+        if new_share:
+            from loan_tracker.collections import wa_link
+            share_wa = wa_link(loan.party.phone, f"Hello {loan.party.name.split()[0]}, here is your loan statement "
+                                                 f"(LN-{loan.id}): {new_share['url']} . The link is private and works "
+                                                 f"for {new_share['days']} days.")
         return render(request, "loan.html", docs=svc.documents(s, loan_id=loan_id), vault_problem=vault.problem,
+                      shares=svc.share_links(s, loan_id) if loan.direction == "GIVEN" else [],
+                      new_share=new_share, share_wa=share_wa, public_url=settings.public_url,
+                      now_utc=datetime.now(timezone.utc),
                       loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
                       links=links, others=others, acts=acts, proms=proms, wa=wa, rcpts=rcpts,
                       missing_receipts=missing, can_close=can_close)
@@ -564,6 +577,74 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             except svc.ServiceError as exc:
                 error = str(exc)
         return render(request, "simulate.html", form=form, loans=loans, result=result, new=new, sim_error=error)
+
+    # ---- borrower statement links (Phase 15) -------------------------------------------
+    PUBLIC_HEADERS = {"Cache-Control": "no-store, private", "X-Robots-Tag": "noindex, nofollow",
+                      "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+                      "X-Frame-Options": "DENY",
+                      "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self' data:; "
+                                                 "form-action 'none'; frame-ancestors 'none'; base-uri 'none'"}
+
+    def public_page(request: Request, name: str, status: int = 200, **ctx):
+        """No session, no CSRF token, no sidebar: nothing of the owner's app leaks into it."""
+        ctx.update(request=request, today=app.state.today(),
+                   issuer={"name": settings.receipt_name, "details": settings.receipt_details})
+        return templates.TemplateResponse(request, name, ctx, status_code=status, headers=PUBLIC_HEADERS)
+
+    def open_link(request: Request, token: str, s: Session):
+        """The live link for token, or a 'not available' response. Failures are rate limited per IP."""
+        ip = request.client.host if request.client else "?"
+        now_ts = time.time()
+        fails = app.state.failed_shares[ip]
+        while fails and now_ts - fails[0] > 900:
+            fails.popleft()
+        if len(fails) >= 30:
+            return None, public_page(request, "public_unavailable.html", 429,
+                                     message="Too many attempts. Please try again later.")
+        try:
+            return svc.resolve_share_link(s, token, datetime.now(timezone.utc)), None
+        except svc.LinkUnavailable as exc:
+            fails.append(now_ts)
+            return None, public_page(request, "public_unavailable.html", 410 if "not valid" not in str(exc)
+                                     else 404, message=str(exc))
+
+    @app.get("/s/{token}", response_class=HTMLResponse)
+    def shared_statement(token: str, request: Request, s: Session = Depends(db)):
+        link, refusal = open_link(request, token, s)
+        if refusal:
+            return refusal
+        svc.record_share_view(s, link, datetime.now(timezone.utc))
+        log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id)
+        st = svc.borrower_statement(s, link.loan_id, app.state.today())
+        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at)
+
+    @app.get("/s/{token}/receipts/{receipt_id}", response_class=HTMLResponse)
+    def shared_receipt(token: str, receipt_id: int, request: Request, s: Session = Depends(db)):
+        from loan_tracker.receipts import amount_in_words
+        link, refusal = open_link(request, token, s)
+        if refusal:
+            return refusal
+        r = s.get(m.Receipt, receipt_id)
+        if r is None or r.loan_id != link.loan_id:            # only receipts of this link's loan
+            return public_page(request, "public_unavailable.html", 404, message="This receipt is not available.")
+        log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id, note=r.number)
+        return public_page(request, "public_receipt.html", r=r, loan=r.loan, words=amount_in_words(r.amount_paise),
+                           issuer=issuer_for(r.loan.book), base=f"/s/{token}", expires=link.expires_at)
+
+    @app.post("/loans/{loan_id}/share", dependencies=[Depends(check_csrf)])
+    def share_create(loan_id: int, request: Request, days: int = Form(30), username: str = Depends(user),
+                     s: Session = Depends(db)):
+        link, token = svc.create_share_link(s, loan_id, days=days, actor=username, now=datetime.now(timezone.utc))
+        log(request, s, "SHARE_CREATED", "share_link", link.id, loan_id=loan_id, note=f"{days} days")
+        base = settings.public_url or str(request.base_url).rstrip("/")
+        request.session["new_share"] = {"loan_id": loan_id, "url": f"{base}/s/{token}", "days": days}
+        return RedirectResponse(f"/loans/{loan_id}#share", status_code=303)
+
+    @app.post("/share/{link_id}/revoke", dependencies=[Depends(check_csrf)])
+    def share_revoke(link_id: int, request: Request, username: str = Depends(user), s: Session = Depends(db)):
+        link = svc.revoke_share_link(s, link_id, actor=username, now=datetime.now(timezone.utc))
+        log(request, s, "SHARE_REVOKED", "share_link", link.id, loan_id=link.loan_id)
+        return back(request, f"/loans/{link.loan_id}#share", flash="Link switched off. It no longer opens.")
 
     @app.get("/documents", response_class=HTMLResponse)
     def documents_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):

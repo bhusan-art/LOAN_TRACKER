@@ -113,6 +113,8 @@ ACTION_LABELS = {
     "BANK_IGNORED": ("Bank line ignored", "gray"), "BANK_UNDONE": ("Bank line reopened", "orange"),
     "DOC_UPLOADED": ("Document added", "purple"), "DOC_VIEWED": ("Document opened", "gray"),
     "DOC_DELETED": ("Document deleted", "red"),
+    "SHARE_CREATED": ("Statement link made", "purple"), "SHARE_VIEWED": ("Borrower viewed", "green"),
+    "SHARE_REVOKED": ("Statement link off", "orange"),
 }
 
 KIND_LABELS = {"CALL": "Call", "VISIT": "Visit", "WHATSAPP": "WhatsApp", "SMS": "SMS", "OTHER": "Other"}

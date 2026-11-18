@@ -107,6 +107,14 @@
   people/loans, /documents, view logged, no-store + sandbox headers. gen-doc-key;
   backups include documents; key kept out of backups on purpose. 265 tests.
 
+- Evaluation after 14: clean; pip-audit found no known vulnerabilities.
+- Phase 15 (borrower statement links): migration 0009 share_link (SHA-256 of the
+  token only; 7/30/90 days; one-time revoke; view count; guarded). /s/{token} and
+  its receipts: no login, no session/cookie, no-store, noindex, strict CSP, 30
+  failures/15 min per IP. BorrowerStatement exposes only the borrower's own loan.
+  Owner: create (link shown once, WhatsApp send), list, switch off; views logged.
+  PUBLIC_URL setting; receipt card shared via _receipt_doc.html. 272 tests.
+
 ## Next step
-Deferred ideas: application/approval workflow, official WhatsApp API.
+Deferred ideas: read-only login, application/approval workflow, official WhatsApp API.
 

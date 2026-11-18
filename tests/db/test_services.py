@@ -791,3 +791,63 @@ class TestDocuments:
             with pytest.raises(DBAPIError, match=msg):
                 with s.begin_nested():
                     s.execute(text(sql), {"i": d.id})
+
+
+class TestShareLinks:
+    NOW = __import__("datetime").datetime(2026, 4, 1, 10, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    def test_token_is_never_stored(self, s):
+        loan = make_loan(s)
+        link, token = svc.create_share_link(s, loan.id, days=30, actor="owner", now=self.NOW)
+        assert len(token) == 32 and token not in link.token_hash
+        from sqlalchemy import func
+        assert s.scalar(select(func.count()).select_from(m.ShareLink).where(m.ShareLink.token_hash == token)) == 0
+        assert svc.resolve_share_link(s, token, self.NOW).id == link.id
+        assert (link.expires_at - link.created_at).days == 30
+
+    def test_expired_revoked_unknown_malformed(self, s):
+        from datetime import timedelta
+        loan = make_loan(s)
+        link, token = svc.create_share_link(s, loan.id, days=7, actor="o", now=self.NOW)
+        with pytest.raises(svc.LinkUnavailable, match="expired"):
+            svc.resolve_share_link(s, token, self.NOW + timedelta(days=7))
+        for bad in ("", "x" * 65, "abc/../def", token[:-1] + ("A" if token[-1] != "A" else "B")):
+            with pytest.raises(svc.LinkUnavailable, match="not valid"):
+                svc.resolve_share_link(s, bad, self.NOW)
+        svc.revoke_share_link(s, link.id, actor="o", now=self.NOW)
+        with pytest.raises(svc.LinkUnavailable, match="switched off"):
+            svc.resolve_share_link(s, token, self.NOW)
+        with pytest.raises(svc.ServiceError, match="already switched off"):
+            svc.revoke_share_link(s, link.id, actor="o", now=self.NOW)
+
+    def test_only_for_given_loans_and_fixed_lengths(self, s):
+        with pytest.raises(svc.ServiceError, match="borrowers"):
+            svc.create_share_link(s, make_loan(s, direction="TAKEN", name="L").id, days=30, actor="o", now=self.NOW)
+        with pytest.raises(svc.ServiceError, match="7, 30 or 90"):
+            svc.create_share_link(s, make_loan(s).id, days=365, actor="o", now=self.NOW)
+
+    def test_views_counted_and_record_protected(self, s):
+        loan = make_loan(s)
+        link, token = svc.create_share_link(s, loan.id, days=30, actor="o", now=self.NOW)
+        svc.record_share_view(s, link, self.NOW)
+        svc.record_share_view(s, link, self.NOW)
+        assert link.view_count == 2
+        for sql, msg in (("UPDATE share_link SET expires_at = expires_at + interval '1 year' WHERE id = :i",
+                          "only be revoked"),
+                         ("UPDATE share_link SET view_count = 0 WHERE id = :i", "only be revoked"),
+                         ("DELETE FROM share_link WHERE id = :i", "revoke them instead")):
+            with pytest.raises(DBAPIError, match=msg):
+                with s.begin_nested():
+                    s.execute(text(sql), {"i": link.id})
+
+    def test_borrower_statement_shows_only_their_loan(self, s):
+        loan, p1, p2, _ = example_a(s)
+        svc.reverse_entry(s, p1.id, entry_date=D(2026, 4, 1), as_of=D(2026, 4, 1))
+        st = svc.borrower_statement(s, loan.id, D(2026, 4, 1))
+        # without the Rs 1,500, the Rs 32,500 first clears Rs 4,000 of interest: Rs 28,500 to principal
+        assert (st.loan_id, st.principal_outstanding_paise) == (loan.id, P - (3_250_000 - 400_000))
+        assert [(p.entry_date, p.amount_paise) for p in st.payments] == [(D(2026, 3, 15), 3_250_000)]  # reversed one hidden
+        assert st.payments[0].receipt_number == "RCPT-2026-0002"
+        assert st.dues[0].due_date == D(2026, 4, 1) and not st.closed
+        fields = set(svc.BorrowerStatement.__dataclass_fields__)
+        assert not fields & {"book", "notes", "collateral", "party_id", "phone", "address", "status"}

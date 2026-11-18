@@ -43,6 +43,8 @@ class Settings:
     concentration_flag_pct: int = field(default_factory=lambda: int(_env("CONCENTRATION_FLAG_PCT", "25")))
     # cash forecast (Phase 11): warn when the balance would fall below this (rupees)
     cash_buffer_paise: int = field(default_factory=lambda: _rupees_env("CASH_MIN_BALANCE"))
+    # borrower statement links (Phase 15): the address borrowers open, e.g. https://loans.example.com
+    public_url: str = field(default_factory=lambda: _env("PUBLIC_URL").rstrip("/"))
     # documents (Phase 14): encryption key(s) and where the encrypted files live
     document_key: str = field(default_factory=lambda: _env("DOCUMENT_KEY"))
     document_key_old: str = field(default_factory=lambda: _env("DOCUMENT_KEY_OLD"))
