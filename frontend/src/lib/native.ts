@@ -3,9 +3,14 @@
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
 
-// VITE_FORCE_APP=1 at build time runs the browser build in app mode, for testing the
-// phone sign-in from another origin without a phone (never set for real builds).
-export const isNative = Capacitor.isNativePlatform() || import.meta.env.VITE_FORCE_APP === "1";
+// The installed apps: Android (Capacitor) and Windows (Tauri). Both sign in with a device
+// token to the server address entered on first start; isNative means "either app".
+// VITE_FORCE_APP=1 / =desktop at build time runs the browser build as the Android / Windows
+// app, for testing without a phone or Windows (never set for real builds).
+const forced = import.meta.env.VITE_FORCE_APP;
+export const isDesktop = "__TAURI_INTERNALS__" in window || forced === "desktop";
+export const isAndroid = !isDesktop && (Capacitor.isNativePlatform() || forced === "1");
+export const isNative = isAndroid || isDesktop;
 
 const KEY_SERVER = "server";
 const KEY_TOKEN = "token";
@@ -38,8 +43,32 @@ export async function setFlag(key: "lock" | "remind", on: boolean) {
 }
 
 export function deviceName(): string {
+  if (isDesktop) return "Windows PC";
   const m = navigator.userAgent.match(/Android [\d.]+; ([^;)]+)/);
   return (m?.[1]?.replace(/ Build\/.*/, "").trim() || "Android phone").slice(0, 100);
+}
+
+/** Windows app: save a file to the Downloads folder (WebView2's normal download). */
+export function saveBlob(blob: Blob, fileName: string) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = fileName.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 120) || "file";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 60_000);
+}
+
+/** Windows app: open a web, WhatsApp or phone link in the default browser/app, not in the app window. */
+export async function openExternal(url: string) {
+  if (!/^(https?:|tel:|mailto:)/i.test(url)) return;
+  if (forced === "desktop") {                 // browser test build: no Tauri underneath
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
 }
 
 function toBase64(buf: ArrayBuffer): string {

@@ -1,0 +1,79 @@
+# Builds the Ledgerly Windows app installer (.msi).
+#  - Push a tag like v1.0.0 -> the MSI is attached to the GitHub Release of that name
+#    (next to the Android .apk).
+#  - Actions tab -> "Windows app" -> Run workflow -> the MSI is kept as a download (artifact).
+# The installer is not code-signed yet: Windows shows SmartScreen once ("More info" ->
+# "Run anyway").
+name: Windows app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # to attach to the release
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Install and test the screens
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Version from the tag
+        id: ver
+        run: |
+          # MSI versions are numbers only: major.minor.patch (v1.2.3 -> 1.2.3)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then v="${GITHUB_REF_NAME#v}"; v="${v%%-*}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag must look like v1.2.3"; exit 1; }
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build the MSI
+        run: |
+          npx tauri build --bundles msi --config "{\"version\":\"${{ steps.ver.outputs.name }}\"}"
+          msi=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
+          out="$RUNNER_TEMP/Ledgerly_${{ steps.ver.outputs.name }}_x64.msi"
+          cp "$msi" "$out"
+          echo "MSI=$out" >> "$GITHUB_ENV"
+          sha256sum "$out" | tee "$out.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ledgerly_${{ steps.ver.outputs.name }}_x64
+          path: |
+            ${{ env.MSI }}
+            ${{ env.MSI }}.sha256
+          retention-days: 30
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the Android workflow may create the same release at the same moment: either wins
+          gh release create "$GITHUB_REF_NAME" --title "Ledgerly $GITHUB_REF_NAME" \
+            --notes "Android app (.apk) and Windows app (.msi). See the README for installing." 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" "$MSI" "$MSI.sha256" --clobber

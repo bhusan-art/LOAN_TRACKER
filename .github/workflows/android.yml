@@ -98,5 +98,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Ledgerly $GITHUB_REF_NAME" --notes "Android app. Install the .apk on your phone (see README: Android app)."
+          # the Windows workflow may create the same release at the same moment: either wins
+          gh release create "$GITHUB_REF_NAME" --title "Ledgerly $GITHUB_REF_NAME" \
+            --notes "Android app (.apk) and Windows app (.msi). See the README for installing." 2>/dev/null || true
           gh release upload "$GITHUB_REF_NAME" "$APK" "$APK.sha256" --clobber

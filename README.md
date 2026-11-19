@@ -130,7 +130,23 @@ GitHub Actions builds it (about 10 minutes, *Actions* tab); the APK appears unde
 **4. Install it.** On the phone open the release page, download the `.apk`, allow your
 browser to install apps when Android asks, and install. Open **Ledgerly**, enter the https
 address from step 1 and sign in with your password and authenticator code.
-*Settings* in the app: fingerprint lock and due reminders.
+*Settings* in the app: fingerprint lock and due reminders. The app asks for your password
+every time it is started again (for example after removing it from Recents).
+
+### Windows app (Ledgerly for PC)
+
+The same screens in their own window on any Windows 10/11 PC, talking to the server over
+Tailscale like the phone. Files open inside the app and are saved to *Downloads*; WhatsApp,
+phone and email links open in your normal browser/apps.
+
+1. Do step 1 of the Android app (https address) if not done yet. No signing key is needed.
+2. Push a version tag (`git tag v1.0.2` and `git push origin v1.0.2`). The same GitHub run
+   that builds the APK also builds `Ledgerly_1.0.2_x64.msi` and puts it under *Releases*.
+3. On the PC download the `.msi` and open it. It is not signed yet, so Windows shows
+   *"Windows protected your PC"*: click **More info → Run anyway**. The installer fetches
+   Microsoft Edge WebView2 by itself if the PC lacks it (Windows 11 already has it).
+4. Start **Ledgerly** from the Start menu, enter the https address and sign in. Like the
+   phone app, it asks for the password each time it is opened.
 
 **Sign-in safety (website and app).** After 30 minutes without use you are signed out and
 the sign-in screen says why; a browser sign-in also ends after 12 hours. Only one sign-in per
@@ -138,7 +154,7 @@ user is kept: signing in on the phone signs that user out of the browser and any
 and the other way round. Change these in `.env` (`SESSION_IDLE_MINUTES`, `APP_IDLE_MINUTES`,
 `SESSION_MAX_HOURS`, `SINGLE_SESSION=0` to allow several sign-ins) and restart the app.
 
-**A lost phone:** in Ledgerly on the PC open *Settings → Phones with the Ledgerly app →
+**A lost phone:** in Ledgerly on the PC open *Settings → Phones and PCs with the Ledgerly app →
 Sign out*, or run `python -m loan_tracker.cli list-devices` and
 `python -m loan_tracker.cli revoke-device <id>`. A password reset signs out every phone.
 Phones unused for 90 days must sign in again.

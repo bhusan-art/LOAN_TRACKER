@@ -5,7 +5,7 @@ import { kb, when } from "../lib/format";
 import type { Doc } from "../lib/types";
 import { Icon } from "./Icon";
 import { FileButton } from "./FileButton";
-import { isNative } from "../lib/native";
+import { isAndroid } from "../lib/native";
 import { Alert, Card, CardHead, Confirm, Empty, Field, Submit, useAction } from "./ui";
 
 export const DOC_KINDS: [string, string][] = [["ID_PROOF", "ID proof"], ["AGREEMENT", "Agreement"], ["CHEQUE", "Cheque"], ["PHOTO", "Photo"], ["OTHER", "Other"]];
@@ -27,8 +27,8 @@ export function DocList({ docs, showLoan }: { docs: Doc[]; showLoan?: boolean })
             </small>
           </div>
           <div className="flex gap-1.5">
-            <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file`} label="Open" icon="eye" />
-            {!isNative && <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file?download=1`} label="Download" icon="download" />}
+            <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file`} label="Open" icon="eye" preview />
+            {!isAndroid && <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file?download=1`} label="Download" icon="download" />}
             <Confirm text={`Delete “${d.title}”? The encrypted file is erased and cannot be recovered.`} danger label="Delete" onYes={() => del.mutate(d.id)}>
               {(open) => <button type="button" className="btn btn-sm btn-danger" onClick={open} aria-label={`Delete ${d.title}`}><Icon name="trash" className="size-3.5" /></button>}
             </Confirm>

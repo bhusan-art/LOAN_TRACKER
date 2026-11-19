@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { configureApp } from "./lib/api";
+import { configureApp, post } from "./lib/api";
 import { getServer, getToken, isNative, setServer, setToken } from "./lib/native";
 import { Loading } from "./components/ui";
 import AppSetup from "./pages/AppSetup";
@@ -17,7 +17,14 @@ export function AppBoot({ children }: { children: ReactNode }) {
       const [s, t] = await Promise.all([getServer(), getToken()]);
       setServerState(s);
       if (!s) return setState("setup");
-      configureApp(s, t);
+      // every fresh start of the app asks for the password again: the previous sign-in is
+      // ended on the server (best effort: it may be offline) and forgotten here
+      if (t) {
+        configureApp(s, t);
+        await post("/api/device/logout").catch(() => {});
+        await setToken(null);
+      }
+      configureApp(s, null);
       setState("ready");
     })();
     const change = () => { setState("setup"); };
@@ -27,22 +34,12 @@ export function AppBoot({ children }: { children: ReactNode }) {
   if (state === "loading") return <Loading label="Starting…" />;
   if (state === "setup") {
     return <AppSetup current={server} onCancel={server ? () => setState("ready") : undefined} onSaved={async (url) => {
-      if (url !== server) await setToken(null);              // a different server: sign in again
+      await setToken(null);                                   // after choosing the server: sign in
       await setServer(url);
       setServerState(url);
-      configureApp(url, url === server ? await getToken() : null);
+      configureApp(url, null);
       window.location.replace("/login");
     }} />;
   }
-  return (
-    <>
-      {isNative && (
-        // edge-to-edge phones draw the page under the status bar: paint that strip deep teal,
-        // the same colour Capacitor's padding shows on other phones
-        <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 z-[600] bg-deep"
-          style={{ height: "var(--sat)" }} />
-      )}
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

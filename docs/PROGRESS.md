@@ -156,3 +156,11 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - One sign-in per user (SINGLE_SESSION): a new sign-in ends the user's other browsers and phones.
 - Review fixes: double sign-out requests, sign-in screen bouncing back after sign-out, app sign-in race, "Change server" had no cancel, reminders switch only applied after restart, listener leaks, CLI idle state.
 - Tests: 302 pytest, 10 Vitest, web click-through 80/80, app mode 24/24.
+
+## Phase 19 - Windows app + Android fixes (branch windows-app)
+- Tauri 2 shell (frontend/src-tauri) wraps the same React build; MSI built by GitHub Actions (windows.yml) on tags v*, unsigned.
+- Desktop mode: device name "Windows PC", in-app file preview + save to Downloads, external links open in the system browser, print kept.
+- CORS default APP_ORIGINS adds https://tauri.localhost (test added).
+- Android: doubled teal band under the status bar fixed (SystemBars insetsHandling native, no viewport-fit=cover).
+- App start (Android and Windows) always ends the previous sign-in and asks for the password.
+- Tests: 303 pytest, 10 Vitest, web 80/80, phone mode 26/26, Windows mode 15/15. MSI/Rust build not run here (first run on GitHub).

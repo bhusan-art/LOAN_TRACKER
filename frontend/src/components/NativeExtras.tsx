@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { inr } from "../lib/format";
-import { getFlag, isNative, scheduleDueReminders, unlock } from "../lib/native";
+import { getFlag, isAndroid, isDesktop, openExternal, scheduleDueReminders, unlock } from "../lib/native";
 import type { CalendarPage } from "../lib/types";
 import { useSession } from "../lib/session";
 import { Icon } from "./Icon";
@@ -122,7 +122,29 @@ function Reminders() {
   return null;
 }
 
+/**
+ * Windows app: links to other sites (WhatsApp reminders, receipts on WhatsApp, phone numbers)
+ * open in the default browser or app. The app window itself never leaves Ledgerly.
+ */
+function DesktopLinks() {
+  useEffect(() => {
+    const click = (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a) return;
+      const href = a.getAttribute("href") ?? "";
+      const external = /^(tel:|mailto:)/i.test(href) || (/^https?:/i.test(href) && new URL(href).origin !== window.location.origin);
+      if (!external) return;
+      e.preventDefault();
+      openExternal(href).catch(() => {});
+    };
+    document.addEventListener("click", click, true);
+    return () => document.removeEventListener("click", click, true);
+  }, []);
+  return null;
+}
+
 export function NativeExtras() {
-  if (!isNative) return null;
+  if (isDesktop) return <DesktopLinks />;
+  if (!isAndroid) return null;
   return <><AppLock /><BackButton /><Reminders /></>;
 }

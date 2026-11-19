@@ -12,8 +12,10 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: false, // no Chrome DevTools into the app in release builds
   },
   plugins: {
-    // white status/gesture bar icons on the deep-teal bars (see res/values/styles.xml)
-    SystemBars: { insetsHandling: "css", initialViewportFitValueHint: "cover", style: "DARK" },
+    // Capacitor alone makes room for the status and gesture bars (the page is not drawn
+    // under them, so it never adds their height a second time); the room shows the deep-teal
+    // window colour from res/values/styles.xml, with white icons
+    SystemBars: { insetsHandling: "native", initialViewportFitValueHint: "contain", style: "DARK" },
     LocalNotifications: { smallIcon: "ic_stat_ledgerly", iconColor: "#087f72" },
   },
 };
