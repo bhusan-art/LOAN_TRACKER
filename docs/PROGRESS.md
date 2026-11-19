@@ -141,3 +141,11 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - Tests: test_web.py ported to the API with the same expected numbers + new tests (288 pass); Vitest for formatting;
   browser click-through 70/70 (desktop, phone, viewer, borrower link). Dockerfile builds the app in a Node stage.
 - Review fixes: service worker registered again (installable); viewers can use What-if (READ_ONLY_POSTS); book switch query keys.
+
+## Phase 18 - Android app (branch android-app) - done
+- Capacitor wraps the React app (frontend/android); APK built and signed by GitHub Actions on tags v*.
+- Phone sign-in = device token (app_device, hash only, DB-guarded); bearer auth, no CSRF needed; CORS only for the app;
+  ends on sign-out, password reset, disable, 90 days idle. CLI list-devices / revoke-device; Settings page.
+- App: server address (https only), fingerprint lock, due reminders, share sheet for files, back button; no backups.
+- Tests: 299 pytest (10 new), 10 Vitest, web click-through 73/73, app mode from another origin 19/19.
+- Not run here: the Gradle/APK build itself (Android servers blocked in this workspace) - first run is on GitHub.

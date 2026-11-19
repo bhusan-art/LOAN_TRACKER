@@ -4,6 +4,8 @@ import { useSession } from "../lib/session";
 import { kb, when } from "../lib/format";
 import type { Doc } from "../lib/types";
 import { Icon } from "./Icon";
+import { FileButton } from "./FileButton";
+import { isNative } from "../lib/native";
 import { Alert, Card, CardHead, Confirm, Empty, Field, Submit, useAction } from "./ui";
 
 export const DOC_KINDS: [string, string][] = [["ID_PROOF", "ID proof"], ["AGREEMENT", "Agreement"], ["CHEQUE", "Cheque"], ["PHOTO", "Photo"], ["OTHER", "Other"]];
@@ -18,15 +20,15 @@ export function DocList({ docs, showLoan }: { docs: Doc[]; showLoan?: boolean })
       {docs.map((d) => (
         <div key={d.id} className="flex flex-wrap items-center gap-3 py-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-tealsoft text-teal"><Icon name="file" className="size-4" /></span>
-          <a href={`/api/documents/${d.id}/file`} target="_blank" rel="noopener" className="min-w-0 flex-1 hover:text-teal">
+          <div className="min-w-0 flex-1">
             <b className="block truncate text-[13px]">{d.title}</b>
             <small className="block truncate text-[11px] text-muted">
               {d.kind_label} · {kb(d.size_bytes)} · {when(d.created_at, session?.timezone)}{d.party_name ? ` · ${d.party_name}` : ""}{showLoan && d.loan_id ? ` · LN-${d.loan_id}` : ""}
             </small>
-          </a>
+          </div>
           <div className="flex gap-1.5">
-            <a className="btn btn-sm" href={`/api/documents/${d.id}/file`} target="_blank" rel="noopener"><Icon name="eye" className="size-3.5" />Open</a>
-            <a className="btn btn-sm" href={`/api/documents/${d.id}/file?download=1`}><Icon name="download" className="size-3.5" />Download</a>
+            <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file`} label="Open" icon="eye" />
+            {!isNative && <FileButton className="btn btn-sm" path={`/api/documents/${d.id}/file?download=1`} label="Download" icon="download" />}
             <Confirm text={`Delete “${d.title}”? The encrypted file is erased and cannot be recovered.`} danger label="Delete" onYes={() => del.mutate(d.id)}>
               {(open) => <button type="button" className="btn btn-sm btn-danger" onClick={open} aria-label={`Delete ${d.title}`}><Icon name="trash" className="size-3.5" /></button>}
             </Confirm>

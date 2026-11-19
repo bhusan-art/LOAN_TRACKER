@@ -45,6 +45,9 @@ class Settings:
     cash_buffer_paise: int = field(default_factory=lambda: _rupees_env("CASH_MIN_BALANCE"))
     # borrower statement links (Phase 15): the address borrowers open, e.g. https://loans.example.com
     public_url: str = field(default_factory=lambda: _env("PUBLIC_URL").rstrip("/"))
+    # origins allowed to call the API with a phone token: the Android app's own pages
+    app_origins: tuple[str, ...] = field(default_factory=lambda: tuple(
+        o.strip().rstrip("/") for o in _env("APP_ORIGINS", "https://localhost").split(",") if o.strip()))
     # documents (Phase 14): encryption key(s) and where the encrypted files live
     document_key: str = field(default_factory=lambda: _env("DOCUMENT_KEY"))
     document_key_old: str = field(default_factory=lambda: _env("DOCUMENT_KEY_OLD"))

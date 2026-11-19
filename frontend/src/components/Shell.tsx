@@ -3,7 +3,9 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-do
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Icon } from "./Icon";
 import { Alert, cx, Field, FormFoot, Modal, Submit, useAction, formObject } from "./ui";
-import { api, post } from "../lib/api";
+import { api, configureApp, post } from "../lib/api";
+import { cancelDueReminders, getServer, isNative, setToken } from "../lib/native";
+import { NativeExtras } from "./NativeExtras";
 import { useSession } from "../lib/session";
 import { dmy, inr } from "../lib/format";
 import type { LoanBrief } from "../lib/types";
@@ -161,11 +163,20 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       { to: "/funding", label: "Funding links", icon: "link" },
       { to: "/bank", label: "Bank import", icon: "bank" },
       { to: "/activity", label: "Activity log", icon: "activity" },
+      { to: "/settings", label: "Settings", icon: "cog" },
     ]],
   ];
-  const logout = useAction(() => post("/api/logout"), { quiet: true, onDone: () => { qc.clear(); nav("/login"); } });
+  const logout = useAction(async () => {
+    if (!isNative) return post("/api/logout");
+    // the app: end this phone's sign-in on the server, then forget the token and reminders
+    try { await post("/api/device/logout"); } catch { /* already signed out */ }
+    await setToken(null);
+    configureApp((await getServer()) ?? "", null);
+    await cancelDueReminders().catch(() => {});
+    return { message: undefined };
+  }, { quiet: true, onDone: () => { qc.clear(); nav("/login"); } });
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] px-[15px] pt-6 pb-4 text-[#e9f4f1]">
+    <div className="safe-top safe-bottom flex h-full flex-col overflow-y-auto bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] px-[15px] pt-6 pb-4 text-[#e9f4f1]">
       <Link to="/" onClick={onNavigate} className="flex items-center gap-[11px] px-2.5 pb-8">
         <span className="grid size-[38px] place-items-center rounded-xl bg-[#f3a64d] font-display text-[22px] font-extrabold text-[#103b3d]">L</span>
         <span><b className="block font-display text-xl font-extrabold tracking-[-.6px]">Ledgerly</b>
@@ -222,7 +233,7 @@ const TITLES: [RegExp, string][] = [
   [/^\/calendar/, "Cash calendar"], [/^\/people\/\d+/, "Person"], [/^\/people/, "People"], [/^\/documents/, "Documents"],
   [/^\/receipts\/\d+/, "Receipt"], [/^\/receipts/, "Receipts"], [/^\/cash/, "Cash & forecast"], [/^\/simulate/, "What-if simulator"],
   [/^\/reports/, "Reports"], [/^\/funding/, "Funding links"], [/^\/bank\/imports/, "Bank statement"], [/^\/bank/, "Bank import"],
-  [/^\/activity/, "Activity log"],
+  [/^\/activity/, "Activity log"], [/^\/settings/, "Settings"],
 ];
 
 export function Shell({ children }: { children?: ReactNode }) {
@@ -244,7 +255,8 @@ export function Shell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className={cx("app-main min-w-0 flex-1 lg:ml-[244px]", !canEdit && "viewer")}>
-          <header className="no-print sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-line bg-card px-3.5 sm:h-[70px] sm:px-9">
+          <div className="no-print safe-top sticky top-0 z-20 bg-card">
+          <header className="flex h-[64px] items-center justify-between gap-3 border-b border-line bg-card px-3.5 sm:h-[70px] sm:px-9">
             <div className="flex min-w-0 items-center gap-2">
               <button type="button" className="grid size-[38px] place-items-center rounded-lg border border-line lg:hidden" aria-label="Open menu" onClick={() => setDrawer(true)}>
                 <Icon name="menu" className="size-[18px]" />
@@ -266,6 +278,7 @@ export function Shell({ children }: { children?: ReactNode }) {
               </div>
             </div>
           </header>
+          </div>
           {!canEdit && session?.user && (
             <div className="no-print border-b border-line bg-ambersoft px-4 py-2 text-center text-xs font-semibold text-[#9a5b14] dark:text-amber">
               Read-only access: you can look at everything, but only the owner can make changes.
@@ -276,10 +289,11 @@ export function Shell({ children }: { children?: ReactNode }) {
               SECRET_KEY is weak or a default. Set a long random value in .env before using this for real money.
             </div>
           )}
-          <main className="mx-auto max-w-[1600px] px-3.5 pt-6 pb-16 sm:px-[38px] sm:pt-[34px]">{children ?? <Outlet />}</main>
+          <main className="safe-bottom mx-auto max-w-[1600px] px-3.5 pt-6 pb-16 sm:px-[38px] sm:pt-[34px]">{children ?? <Outlet />}</main>
         </div>
       </div>
       <RecordPayment open={pay.open} loanId={pay.loanId} onClose={() => setPay({ open: false })} />
+      <NativeExtras />
     </PayCtx.Provider>
   );
 }

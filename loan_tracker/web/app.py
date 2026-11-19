@@ -7,7 +7,7 @@ from __future__ import annotations
 import secrets
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from loan_tracker import reports, services as svc
@@ -35,8 +36,9 @@ BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
 PUBLIC_PATHS = ("/login", "/static", "/healthz", "/manifest.webmanifest", "/sw.js")
 
 
-# POSTs that only calculate and save nothing (the what-if simulator): viewers may use them
-READ_ONLY_POSTS = frozenset({"/api/ui/simulate", "/api/simulate/loan", "/api/simulate/new-loan"})
+# POSTs a viewer may make: the what-if simulator only calculates and saves nothing, and
+# signing your own phone out changes nothing of the owner's
+VIEWER_POSTS = frozenset({"/api/ui/simulate", "/api/simulate/loan", "/api/simulate/new-loan", "/api/device/logout"})
 
 
 class ReadOnly(Exception):
@@ -76,6 +78,11 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             fails.popleft()
         return fails
     vault = svc.DocVault.from_settings(settings)
+    # the Android app's screens run at https://localhost and call this server: allow that
+    # origin only, without cookies (the app uses a bearer token)
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.app_origins), allow_credentials=False,
+                       allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Book"],
+                       expose_headers=["Content-Disposition"], max_age=600)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
     async def api_csrf(request: Request) -> None:
@@ -83,6 +90,10 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         session's token in the X-CSRF-Token header (from GET /api/session). A cross-site
         page cannot read the token or set the header, for JSON and file uploads alike."""
         if request.method in ("GET", "HEAD", "OPTIONS") or not request.url.path.startswith("/api/"):
+            return
+        # the Android app: a bearer token is not sent by the browser on its own, and other
+        # sites may not send this header (CORS allows only the app). Phone sign-in uses no cookie.
+        if request.headers.get("authorization", "").lower().startswith("bearer ") or request.url.path == "/api/device/login":
             return
         sent = request.headers.get("x-csrf-token", "")
         if not sent or not secrets.compare_digest(sent, request.session.get("csrf", "")):
@@ -108,7 +119,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     def log(request: Request, s: Session, action: str, entity: str | None = None,
             entity_id: int | None = None, actor: str | None = None, **detail) -> None:
-        svc.audit(s, actor or request.session.get("user") or "unknown", action, entity, entity_id,
+        svc.audit(s, actor or getattr(request.state, "user", None) or request.session.get("user") or "unknown",
+                  action, entity, entity_id,
                   ip=request.client.host if request.client else None, **detail)
 
     def receipt_of(s: Session, entry_id: int):
@@ -128,22 +140,40 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             "payment_mode": r.payment_mode, "reference": r.reference,
             "cancelled": r.cancelled_at is not None, "cancel_reason": r.cancel_reason}.items()}
 
-    def user(request: Request, s: Session = Depends(db)) -> str:
-        """The logged-in user, checked against the database on every request (a disabled
-        user, or a password reset, ends old sessions at once). Viewers may only read:
-        every request other than GET/HEAD from a viewer is refused here, for pages and
-        API alike, so a new route cannot forget it."""
+    def who(request: Request, s: Session) -> m.AppUser | None:
+        """The signed-in user: a phone's bearer token (Android app) or the browser's session
+        cookie, checked against the database on every request (a disabled user, a password
+        reset or a signed-out phone ends access at once). A request that sends a bearer
+        token is judged by the token alone, never by a cookie."""
+        auth_header = request.headers.get("authorization", "")
+        if auth_header:
+            scheme, _, token = auth_header.partition(" ")
+            d = svc.resolve_device(s, token.strip(), datetime.now(timezone.utc)) if scheme.lower() == "bearer" else None
+            if d is None:
+                return None
+            request.state.user, request.state.device_id = d.user.username, d.id
+            return d.user
         name = request.session.get("user")
         if not name:
-            raise LoginRequired()
+            return None
         u = s.scalar(select(m.AppUser).where(m.AppUser.username == name))
         if u is None or u.disabled_at is not None or request.session.get("epoch") != u.session_epoch:
             request.session.clear()
+            return None
+        request.state.user, request.state.device_id = u.username, None
+        return u
+
+    def user(request: Request, s: Session = Depends(db)) -> str:
+        """The logged-in user's name. Viewers may only read: every request other than
+        GET/HEAD from a viewer is refused here, for every route, so a new route cannot
+        forget it (except VIEWER_POSTS, which change nothing of the owner's)."""
+        u = who(request, s)
+        if u is None:
             raise LoginRequired()
         request.state.role = u.role
-        if u.role != "OWNER" and request.method not in ("GET", "HEAD") and request.url.path not in READ_ONLY_POSTS:
+        if u.role != "OWNER" and request.method not in ("GET", "HEAD") and request.url.path not in VIEWER_POSTS:
             raise ReadOnly()
-        return name
+        return u.username
 
     def owner_only(request: Request, name: str = Depends(user)) -> str:
         """For things viewers may not even look at (documents: ID proofs, agreements)."""
@@ -155,7 +185,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return app.state.today()
 
     def book_of(request: Request) -> str:
-        q = (request.query_params.get("book") or request.cookies.get("book") or "all").lower()
+        # ?book=, then the app's X-Book header (the Android app sends no cookies), then the cookie
+        q = (request.query_params.get("book") or request.headers.get("x-book") or request.cookies.get("book") or "all").lower()
         return q if q in BOOKS else "all"
 
     def csrf_token(request: Request) -> str:
@@ -574,7 +605,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     views.register(app, SimpleNamespace(
         db=db, user=user, owner_only=owner_only, log=log, today=today, book_of=book_of, parse_date=parse_date,
         csrf_token=csrf_token, settings=settings, vault=vault, receipt_of=receipt_of, issuer_for=issuer_for,
-        recent_failures=recent_failures, receipt_json=receipt_json, PUBLIC_HEADERS=PUBLIC_HEADERS,
+        recent_failures=recent_failures, who=who, receipt_json=receipt_json, PUBLIC_HEADERS=PUBLIC_HEADERS,
         insecure_secret=insecure_secret, BOOKS=BOOKS, reports_parties=reports_parties))
     serve_spa(app)
     return app

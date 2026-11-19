@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { useSession } from "../lib/session";
 import { dshort, inr, plural } from "../lib/format";
 import type { Loan, TodayItem } from "../lib/types";
-import { Icon } from "../components/Icon";
+import { FileButton } from "../components/FileButton";
 import { BookTag, Card, CardHead, DirTag, Empty, ErrorBox, Loading, PageHead, PersonCell, TableWrap } from "../components/ui";
 
 type R = { fy: { fy: string; book: string; earned: number; paid: number; received: number; paid_out: number; net: number }[];
@@ -17,7 +17,7 @@ export default function Reports() {
   return (
     <>
       <PageHead eyebrow="Analyse" title="Reports" sub="Interest by financial year (for your ITR), overdue dues and cross-book funding."
-        actions={<a className="btn" href="/export.csv"><Icon name="download" className="size-4" />Export CSV</a>} />
+        actions={<FileButton className="btn" path="/export.csv" label="Export CSV" icon="download" />} />
       {q.error && <ErrorBox error={q.error} />}
       {q.isLoading ? <Loading /> : d && (
         <div className="grid gap-4">

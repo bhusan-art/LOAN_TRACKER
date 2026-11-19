@@ -8,7 +8,9 @@ import { ToastProvider } from "./lib/toast";
 import { Shell } from "./components/Shell";
 import { Loading } from "./components/ui";
 import { ApiError } from "./lib/api";
+import { isNative } from "./lib/native";
 import Login from "./pages/Login";
+import { AppBoot } from "./AppBoot";
 import Overview from "./pages/Overview";
 
 const Loans = lazy(() => import("./pages/Loans"));
@@ -31,6 +33,7 @@ const Funding = lazy(() => import("./pages/Funding"));
 const Bank = lazy(() => import("./pages/Bank"));
 const BankImportPage = lazy(() => import("./pages/BankImport"));
 const Activity = lazy(() => import("./pages/Activity"));
+const SettingsPage = lazy(() => import("./pages/Settings"));
 const PublicStatement = lazy(() => import("./pages/PublicStatement"));
 const PublicReceipt = lazy(() => import("./pages/PublicReceipt"));
 const NotFound = lazy(() => import("./pages/NotFound"));
@@ -90,23 +93,27 @@ const router = createBrowserRouter([
       { path: "/bank", element: page(<Bank />) },
       { path: "/bank/imports/:id", element: page(<BankImportPage />) },
       { path: "/activity", element: page(<Activity />) },
+      { path: "/settings", element: page(<SettingsPage />) },
       { path: "/quick", element: <Navigate to="/payments?record=1" replace /> },
       { path: "*", element: page(<NotFound />) },
     ],
   },
 ]);
 
-// makes the app installable on a phone (the worker caches only the icon; data is always live)
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+// makes the web app installable on a phone (the worker caches only the icon; data is always
+// live). The Android app has its own screens inside, so it needs no service worker.
+if ("serviceWorker" in navigator && !isNative) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={qc}>
-      <ToastProvider>
-        <SessionProvider>
-          <RouterProvider router={router} />
-        </SessionProvider>
-      </ToastProvider>
-    </QueryClientProvider>
+    <AppBoot>
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <SessionProvider>
+            <RouterProvider router={router} />
+          </SessionProvider>
+        </ToastProvider>
+      </QueryClientProvider>
+    </AppBoot>
   </StrictMode>,
 );

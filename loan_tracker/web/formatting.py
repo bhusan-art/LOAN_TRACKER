@@ -98,6 +98,7 @@ def when(dt, tz: str = "Asia/Kolkata") -> str:
 ACTION_LABELS = {
     "LOGIN_OK": ("Logged in", "green"), "LOGIN_FAILED": ("Failed login", "red"),
     "LOGIN_BLOCKED": ("Login blocked", "red"), "LOGOUT": ("Logged out", "gray"),
+    "DEVICE_SIGNED_IN": ("Phone signed in", "green"), "DEVICE_SIGNED_OUT": ("Phone signed out", "gray"),
     "PARTY_CREATED": ("Person added", "purple"), "PARTY_UPDATED": ("Person edited", "purple"),
     "LOAN_CREATED": ("Loan created", "green"), "ENTRY_POSTED": ("Entry recorded", "purple"),
     "ENTRY_REVERSED": ("Entry reversed", "orange"), "STATUS_CHANGED": ("Status changed", "orange"),

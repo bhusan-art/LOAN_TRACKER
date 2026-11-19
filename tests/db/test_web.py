@@ -12,7 +12,7 @@ from loan_tracker import auth
 from loan_tracker import services as svc
 from loan_tracker.config import Settings
 from loan_tracker.db import models as m
-from loan_tracker.web.app import READ_ONLY_POSTS, create_app
+from loan_tracker.web.app import VIEWER_POSTS, create_app
 
 SECRET = auth.new_totp_secret()
 
@@ -271,6 +271,7 @@ def test_settled_loan_is_not_chased(client):
 
 
 PUBLIC = {"/healthz", "/manifest.webmanifest", "/sw.js", "/api/session", "/api/login", "/api/logout",
+          "/api/device/login",          # the Android app's sign-in (password + code, rate limited)
           # the React app's own page (index.html) for every non-API path: it has no data in it
           "/{path:path}",
           # borrower statement links: no login, the unguessable token is the key (tested separately)
@@ -685,7 +686,7 @@ def test_every_write_route_refuses_viewers(client, s):
     for route in client.app.routes:
         path = getattr(route, "path", "")
         methods = (getattr(route, "methods", None) or set()) - {"GET", "HEAD", "OPTIONS"}
-        if not methods or path in ("/api/login", "/api/logout") or path in READ_ONLY_POSTS:
+        if not methods or path in ("/api/login", "/api/logout", "/api/device/login") or path in VIEWER_POSTS:
             continue
         url = re.sub(r"\{[^}]+\}", "1", path)
         for method in methods:
