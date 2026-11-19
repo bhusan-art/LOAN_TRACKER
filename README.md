@@ -7,7 +7,7 @@ funds which loan, and a daily Telegram/email digest of what to pay and collect.
 - Exact money: integer paise, never floats. Every number comes from an append-only ledger.
 - Monthly flat interest ("₹2 per ₹100 per month"): a full cycle earns exactly P × rate;
   partial periods are pro-rated by days (DECISIONS #15).
-- Phone-first web app (installable), login with password + authenticator code.
+- Phone-first web app "Ledgerly" (React, installable), login with password + authenticator code.
 
 ---
 
@@ -105,12 +105,21 @@ expires or when you switch it off.
 
 ## 6. Development
 
+The app is two parts: the Python server (FastAPI: login, JSON API, the money engine) and the
+React screens in `frontend/` (Vite + TypeScript + Tailwind). Docker builds both for you; to
+work on them directly you need Python 3.12 and Node.js 22.
+
 ```powershell
 python -m venv .venv ; .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 docker compose up -d db
 python -m loan_tracker.cli migrate
-uvicorn loan_tracker.web.app:app --reload      # http://127.0.0.1:8000
+uvicorn loan_tracker.web.app:app --reload      # API on http://127.0.0.1:8000
+
+cd frontend
+npm ci
+npm run dev                                    # screens on http://127.0.0.1:5173 (calls the API above)
+npm run build                                  # writes loan_tracker/web/spa; then port 8000 serves everything
 ```
 
 Tests (engine tests need nothing; database tests need an empty test database):
@@ -118,7 +127,12 @@ Tests (engine tests need nothing; database tests need an empty test database):
 docker compose exec db createdb -U loan_tracker loan_tracker_test
 $env:TEST_DATABASE_URL = "postgresql+psycopg://loan_tracker:<password>@127.0.0.1:5432/loan_tracker_test"
 pytest -q -x --tb=short
+cd frontend ; npm test ; npm run typecheck
 ```
+
+Using the API from a script: log in with `POST /api/login`, then send the `csrf` value from the
+answer in an `X-CSRF-Token` header on every request that changes something. API docs are at
+`/api/docs` after logging in.
 
 ## 7. Layout
 
@@ -127,7 +141,8 @@ loan_tracker/engine/   pure calculation engine (no DB, no clock) — compute(ter
 loan_tracker/db/       SQL schema + Alembic migration, ORM models
 loan_tracker/services.py   the only code that writes; appends ledger rows, rebuilds caches
 loan_tracker/reports.py    dashboard, cash calendar, FY report, CSV export
-loan_tracker/web/      FastAPI app (HTML pages + JSON API at /api/*, docs at /api/docs)
+loan_tracker/web/      FastAPI app: JSON API at /api/* (views.py = one payload per screen), serves the built React app
+frontend/              React + TypeScript + Tailwind screens (design: docs/design/ledgerly-option1)
 loan_tracker/jobs/     daily job and Telegram/email senders
 loan_tracker/cli.py    migrate, create-user, run-job, scheduler, demo-data
 tests/engine/          engine tests incl. worked examples and property tests

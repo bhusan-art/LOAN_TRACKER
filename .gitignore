@@ -8,3 +8,4 @@ backups/
 .pytest_cache/
 .hypothesis/
 node_modules/
+loan_tracker/web/spa/
