@@ -13,7 +13,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div data-toasts className="no-print fixed inset-x-3 bottom-4 z-[200] flex flex-col items-end gap-2 sm:inset-x-auto sm:right-6"
+      <div data-toasts className="no-print fixed inset-x-3 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] z-[200] flex flex-col items-end gap-2 sm:inset-x-auto sm:right-6"
         role="status" aria-live="polite">
         {items.map((t) => (
           <div key={t.id}

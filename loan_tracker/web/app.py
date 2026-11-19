@@ -5,6 +5,7 @@ Run:  uvicorn loan_tracker.web.app:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import secrets
+import time
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -49,6 +50,14 @@ class LoginRequired(Exception):
     pass
 
 
+# why a sign-in ended, shown on the sign-in screen
+ENDED_MESSAGES = {
+    "idle": "You were signed out because the app was not used for a while. Please sign in again.",
+    "elsewhere": "You were signed out because this account signed in somewhere else (or its password changed).",
+    "signed_out": "This phone was signed out. Please sign in again.",
+}
+
+
 class CsrfFailed(Exception):
     pass
 
@@ -84,7 +93,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Book"],
                        expose_headers=["Content-Disposition"], max_age=600)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
-                       https_only=settings.secure_cookies, max_age=12 * 3600)
+                       max_age=settings.session_max_hours * 3600, https_only=settings.secure_cookies)
+
     async def api_csrf(request: Request) -> None:
         """CSRF guard for the API: every request that changes something must send the
         session's token in the X-CSRF-Token header (from GET /api/session). A cross-site
@@ -142,24 +152,40 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     def who(request: Request, s: Session) -> m.AppUser | None:
         """The signed-in user: a phone's bearer token (Android app) or the browser's session
-        cookie, checked against the database on every request (a disabled user, a password
-        reset or a signed-out phone ends access at once). A request that sends a bearer
-        token is judged by the token alone, never by a cookie."""
+        cookie, checked against the database on every request. Access ends at once when the
+        user is disabled, the password is reset, the user signs in elsewhere (SINGLE_SESSION),
+        a phone is signed out, or nothing was done for the idle limit. On None,
+        request.state.ended says why ("idle", "elsewhere", "signed_out" or None).
+        A request that sends a bearer token is judged by the token alone, never by a cookie."""
+        request.state.ended = None
         auth_header = request.headers.get("authorization", "")
         if auth_header:
             scheme, _, token = auth_header.partition(" ")
-            d = svc.resolve_device(s, token.strip(), datetime.now(timezone.utc)) if scheme.lower() == "bearer" else None
+            if scheme.lower() != "bearer":
+                return None
+            d, why = svc.resolve_device(s, token.strip(), datetime.now(timezone.utc),
+                                        idle=timedelta(minutes=settings.app_idle_minutes))
             if d is None:
+                request.state.ended = why if why in ("idle", "elsewhere", "signed_out") else None
                 return None
             request.state.user, request.state.device_id = d.user.username, d.id
             return d.user
         name = request.session.get("user")
         if not name:
             return None
+        now = time.time()
+        seen, start = request.session.get("seen", 0), request.session.get("start", 0)
+        if now - seen > settings.session_idle_minutes * 60 or now - start > settings.session_max_hours * 3600:
+            request.session.clear()
+            request.state.ended = "idle"
+            return None
         u = s.scalar(select(m.AppUser).where(m.AppUser.username == name))
         if u is None or u.disabled_at is not None or request.session.get("epoch") != u.session_epoch:
             request.session.clear()
+            request.state.ended = "elsewhere"
             return None
+        if now - seen > 15:                      # keep the session alive while it is used
+            request.session["seen"] = now
         request.state.user, request.state.device_id = u.username, None
         return u
 
@@ -169,7 +195,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         forget it (except VIEWER_POSTS, which change nothing of the owner's)."""
         u = who(request, s)
         if u is None:
-            raise LoginRequired()
+            raise LoginRequired(request.state.ended)
         request.state.role = u.role
         if u.role != "OWNER" and request.method not in ("GET", "HEAD") and request.url.path not in VIEWER_POSTS:
             raise ReadOnly()
@@ -214,7 +240,9 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, exc: LoginRequired):
-        return JSONResponse({"detail": "login required"}, status_code=401)
+        reason = exc.args[0] if exc.args else None
+        return JSONResponse({"detail": ENDED_MESSAGES.get(reason, "login required"), "reason": reason},
+                            status_code=401)
 
     @app.exception_handler(RequestValidationError)
     async def _bad_request(request: Request, exc: RequestValidationError):
@@ -605,7 +633,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     views.register(app, SimpleNamespace(
         db=db, user=user, owner_only=owner_only, log=log, today=today, book_of=book_of, parse_date=parse_date,
         csrf_token=csrf_token, settings=settings, vault=vault, receipt_of=receipt_of, issuer_for=issuer_for,
-        recent_failures=recent_failures, who=who, receipt_json=receipt_json, PUBLIC_HEADERS=PUBLIC_HEADERS,
+        recent_failures=recent_failures, who=who, ENDED_MESSAGES=ENDED_MESSAGES, receipt_json=receipt_json, PUBLIC_HEADERS=PUBLIC_HEADERS,
         insecure_secret=insecure_secret, BOOKS=BOOKS, reports_parties=reports_parties))
     serve_spa(app)
     return app

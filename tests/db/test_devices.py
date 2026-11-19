@@ -1,5 +1,5 @@
 """Android app sign-in: device tokens (bearer), their limits, and CORS for the app's origin."""
-from datetime import date as D, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,13 +11,24 @@ from loan_tracker.db import models as m
 from tests.db.test_web import SECRET, login, make_client
 
 
-@pytest.fixture()
-def app_client(s):
+def _users(s):
     s.add(m.AppUser(username="owner", password_hash=auth.hash_password("a long password"), totp_secret=SECRET))
     s.add(m.AppUser(username="acct", password_hash=auth.hash_password("acct pass word 1"), totp_secret=SECRET,
                     role="VIEWER"))
     s.flush()
+
+
+@pytest.fixture()
+def app_client(s):
+    _users(s)
     return make_client(s)
+
+
+@pytest.fixture()
+def multi_client(s):
+    """SINGLE_SESSION=0: the same user may be signed in on several phones and browsers."""
+    _users(s)
+    return make_client(s, single_session=False)
 
 
 def phone(client, username="owner", password="a long password", name="Pixel 8") -> TestClient:
@@ -74,7 +85,8 @@ def test_bad_or_mixed_credentials_are_refused(app_client):
     assert app_client.get("/api/ui/home", headers={"Authorization": "Bearer ld_wrong"}).status_code == 401
 
 
-def test_sign_out_password_reset_disable_and_idle_end_a_phone(app_client, s):
+def test_sign_out_password_reset_disable_and_idle_end_a_phone(multi_client, s):
+    app_client = multi_client
     # signed out from the browser by the owner
     p1 = phone(app_client, name="Old phone")
     login(app_client)
@@ -94,11 +106,16 @@ def test_sign_out_password_reset_disable_and_idle_end_a_phone(app_client, s):
     owner.session_epoch += 1
     s.flush()
     assert p3.get("/api/ui/home").status_code == 401
-    # unused for 90+ days
+    # unused for longer than APP_IDLE_MINUTES (30): signed out, and told why
     p4 = phone(app_client)
-    s.execute(text("UPDATE app_device SET last_used_at = now() - interval '91 days' WHERE id = :i"), {"i": p4.device_id})
+    s.execute(text("UPDATE app_device SET last_used_at = now() - interval '31 minutes' WHERE id = :i"), {"i": p4.device_id})
     s.expire_all()
-    assert p4.get("/api/ui/home").status_code == 401
+    r = p4.get("/api/ui/home")
+    assert r.status_code == 401 and r.json()["reason"] == "idle" and "not used for a while" in r.json()["detail"]
+    assert p4.get("/api/session").json()["user"] is None
+    assert p4.get("/api/ui/home").status_code == 401                     # stays refused
+    assert svc.resolve_device_state(s.get(m.AppDevice, p4.device_id), datetime.now(timezone.utc),
+                                    timedelta(minutes=30)) == "IDLE"
     # a disabled user
     p5 = phone(app_client)
     s.add(m.AppUser(username="owner2", password_hash="x", role="OWNER"))
@@ -178,7 +195,6 @@ def test_cli_lists_and_signs_out_phones(app_client, s, capsys, monkeypatch):
     cli.cmd_devices(type("A", (), {"cmd": "revoke-device", "device_id": p.device_id})())
     assert "is signed out" in capsys.readouterr().out
     assert p.get("/api/ui/home").status_code == 401
-    assert D(2026, 1, 1) < D.today() + timedelta(days=1)                   # keep imports honest
 
 
 def test_phone_chooses_the_book_with_a_header(app_client):
@@ -192,3 +208,61 @@ def test_phone_chooses_the_book_with_a_header(app_client):
     pre = TestClient(app_client.app).options("/api/ui/loans", headers={
         "Origin": "https://localhost", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-book"})
     assert "x-book" in pre.headers["access-control-allow-headers"].lower()
+
+
+def test_one_sign_in_per_user(app_client):
+    """SINGLE_SESSION (default): a new sign-in, on a phone or in a browser, ends the others."""
+    p1 = phone(app_client, name="Phone one")
+    assert p1.get("/api/ui/home").status_code == 200
+    p2 = phone(app_client, name="Phone two")
+    r = p1.get("/api/ui/home")
+    assert r.status_code == 401 and r.json()["reason"] == "elsewhere" and "signed in somewhere else" in r.json()["detail"]
+    assert p2.get("/api/ui/home").status_code == 200
+    login(app_client)                                   # now the browser
+    assert p2.get("/api/ui/home").status_code == 401
+    assert app_client.get("/api/ui/home").status_code == 200
+    b2 = TestClient(app_client.app)                     # a second browser
+    login(b2)
+    assert "signed in somewhere else" in app_client.get("/api/session").json()["ended"]
+    assert app_client.get("/api/ui/home").status_code == 401
+    assert b2.get("/api/ui/home").status_code == 200
+    # other users are not affected
+    v = phone(app_client, "acct", "acct pass word 1")
+    assert b2.get("/api/ui/home").status_code == 200 and v.get("/api/ui/home").status_code == 200
+    labels = [d["state"] for d in b2.get("/api/devices").json()]
+    assert labels.count("ENDED") == 2
+
+
+def test_browser_session_ends_when_idle_or_too_old(app_client, monkeypatch):
+    import time as _t
+    login(app_client)
+    assert app_client.get("/api/session").json()["idle_minutes"] == 30
+    real = _t.time
+    monkeypatch.setattr(_t, "time", lambda: real() + 29 * 60)            # 29 minutes later: still fine
+    assert app_client.get("/api/ui/home").status_code == 200
+    monkeypatch.setattr(_t, "time", lambda: real() + 29 * 60 + 31 * 60)  # 31 minutes after that: signed out
+    r = app_client.get("/api/ui/home")
+    assert r.status_code == 401 and r.json()["reason"] == "idle"
+    monkeypatch.setattr(_t, "time", real)
+    login(app_client)
+    # kept busy, but never longer than SESSION_MAX_HOURS (12)
+    for minutes in range(20, 12 * 60, 20):
+        monkeypatch.setattr(_t, "time", lambda m=minutes: real() + m * 60)
+        assert app_client.get("/api/ui/home").status_code == 200, minutes
+    monkeypatch.setattr(_t, "time", lambda: real() + 12 * 3600 + 60)
+    assert app_client.get("/api/ui/home").status_code == 401
+
+
+def test_idle_limits_are_settings(s):
+    _users(s)
+    c = make_client(s, session_idle_minutes=10, app_idle_minutes=60)
+    login(c)
+    assert c.get("/api/session").json()["idle_minutes"] == 10
+    assert phone(c).get("/api/session").json()["idle_minutes"] == 60
+    from loan_tracker.config import _bounded_int
+    import os
+    os.environ["SESSION_IDLE_MINUTES"] = "0"
+    try:
+        assert _bounded_int("SESSION_IDLE_MINUTES", 30, 5, 1440) == 5           # cannot be switched off
+    finally:
+        del os.environ["SESSION_IDLE_MINUTES"]

@@ -74,9 +74,12 @@ def cmd_devices(args) -> None:
             rows = svc.list_devices(s)
             if not rows:
                 print("No phones have signed in.")
+            from datetime import timedelta
+            from loan_tracker.config import Settings
+            idle = timedelta(minutes=Settings().app_idle_minutes)      # the same limit the server uses
             for d in rows:
-                last = d.last_used_at.strftime("%d %b %Y") if d.last_used_at else "-"
-                print(f"{d.id:<5} {d.user.username:<16} {d.name[:30]:<31} {svc.resolve_device_state(d, now).lower():<11} last used {last}")
+                last = d.last_used_at.strftime("%d %b %Y %H:%M") if d.last_used_at else "-"
+                print(f"{d.id:<5} {d.user.username:<16} {d.name[:30]:<31} {svc.resolve_device_state(d, now, idle).lower():<11} last used {last}")
             return
         try:
             d = svc.revoke_device(s, args.device_id, actor="cli", now=now)

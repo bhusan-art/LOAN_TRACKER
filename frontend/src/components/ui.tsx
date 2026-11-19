@@ -256,7 +256,7 @@ export function Modal({ open, onClose, title, children, wide }: {
     <div className="no-print fixed inset-0 z-[100] flex items-end justify-center bg-[#04161ab3] p-0 sm:items-center sm:p-4"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div ref={ref} role="dialog" aria-modal="true" aria-label={title}
-        className={cx("card max-h-[92vh] w-full overflow-auto rounded-b-none p-5 sm:rounded-[14px] sm:p-6", wide ? "sm:max-w-3xl" : "sm:max-w-lg")}>
+        className={cx("card max-h-[92vh] w-full overflow-auto rounded-b-none p-5 pb-[calc(1.25rem+var(--sab))] sm:rounded-[14px] sm:p-6", wide ? "sm:max-w-3xl" : "sm:max-w-lg")}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-extrabold">{title}</h2>
           <button type="button" className="grid size-8 place-items-center rounded-lg text-muted hover:bg-chip" aria-label="Close" onClick={onClose}>

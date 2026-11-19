@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, post } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useToast } from "../lib/toast";
@@ -12,7 +12,8 @@ type Device = { id: number; name: string; user: string; created_at: string; last
   live: boolean; state: "LIVE" | "SIGNED_OUT" | "ENDED" | "IDLE"; current: boolean };
 
 const STATE: Record<Device["state"], [string, "green" | "gray" | "amber"]> = {
-  LIVE: ["Signed in", "green"], SIGNED_OUT: ["Signed out", "gray"], ENDED: ["Ended by password reset", "gray"], IDLE: ["Unused 90+ days", "amber"] };
+  LIVE: ["Signed in", "green"], SIGNED_OUT: ["Signed out", "gray"],
+  ENDED: ["Ended: signed in elsewhere or password changed", "gray"], IDLE: ["Ended: not used for a while", "amber"] };
 
 function Toggle({ label, sub, on, onChange, disabled }: { label: string; sub: string; on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
@@ -26,6 +27,7 @@ function Toggle({ label, sub, on, onChange, disabled }: { label: string; sub: st
 
 function ThisPhone() {
   const toast = useToast();
+  const qc = useQueryClient();
   const [server, setServer] = useState<string | null>(null);
   const [lock, setLock] = useState(false);
   const [remind, setRemind] = useState(true);
@@ -52,6 +54,7 @@ function ThisPhone() {
         on={remind} onChange={async (v) => {
           await setFlag("remind", v); setRemind(v);
           if (!v) await cancelDueReminders().catch(() => {});
+          else await qc.invalidateQueries({ queryKey: ["reminder-calendar"] });
           toast(v ? "Reminders are on. They refresh each time you open the app." : "Reminders are off.");
         }} />
     </Card>

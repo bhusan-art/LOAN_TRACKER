@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, configureApp } from "../lib/api";
 import { deviceName, getServer, isNative, setToken } from "../lib/native";
+import { clearSignedOutReason, signedOutReason } from "../lib/signout";
 import { useSession } from "../lib/session";
 import { Alert, Field } from "../components/ui";
 
@@ -12,6 +13,7 @@ export default function Login() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [notice] = useState(() => signedOutReason());
   const [busy, setBusy] = useState(false);
   const [server, setServerShown] = useState<string | null>(null);
   useEffect(() => { if (isNative) getServer().then(setServerShown); }, []);
@@ -28,12 +30,16 @@ export default function Login() {
       const creds = { username: f.get("username"), password: f.get("password"), code: f.get("code") ?? "" };
       if (isNative) {
         // the app gets its own sign-in (a token for this phone) instead of a browser cookie
+        const base = server ?? (await getServer());          // read now: the screen may still be loading it
+        if (!base) throw new Error("Choose your server first.");
+        configureApp(base, null);
         const r = await api<{ token: string }>("/api/device/login", { json: { ...creds, device_name: deviceName() } });
         await setToken(r.token);
-        configureApp(server ?? "", r.token);
+        configureApp(base, r.token);
       } else {
         await api("/api/login", { json: creds });
       }
+      clearSignedOutReason();
       await qc.invalidateQueries();
       nav(target, { replace: true });
     } catch (err) {
@@ -44,7 +50,7 @@ export default function Login() {
   }
 
   return (
-    <div className="safe-top grid min-h-screen lg:grid-cols-[1.1fr_1fr]">
+    <div className="grid min-h-screen pt-[var(--sat)] lg:grid-cols-[1.1fr_1fr]">
       <div className="hidden flex-col justify-between bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] p-12 text-[#e9f4f1] lg:flex">
         <div className="flex items-center gap-3">
           <span className="grid size-11 place-items-center rounded-xl bg-[#f3a64d] font-display text-2xl font-extrabold text-[#103b3d]">L</span>
@@ -65,6 +71,7 @@ export default function Login() {
           <h1 className="text-[26px] font-extrabold tracking-[-1px]">Sign in</h1>
           <p className="mt-1 mb-6 text-[13px] text-muted">Use your username, password and the 6-digit code from your authenticator app.</p>
           {error && <div className="mb-4"><Alert tone="red">{error}</Alert></div>}
+          {!error && (notice || session?.ended) && <div className="mb-4"><Alert>{notice || session?.ended}</Alert></div>}
           <div className="grid gap-4">
             <Field label="Username">{(id) => <input id={id} name="username" className="input" autoComplete="username" required autoFocus />}</Field>
             <Field label="Password">{(id) => <input id={id} name="password" type="password" className="input" autoComplete="current-password" required />}</Field>

@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Icon } from "./Icon";
 import { Alert, cx, Field, FormFoot, Modal, Submit, useAction, formObject } from "./ui";
-import { api, configureApp, post } from "../lib/api";
-import { cancelDueReminders, getServer, isNative, setToken } from "../lib/native";
+import { api, post } from "../lib/api";
+import { useSignOut } from "../lib/signout";
 import { NativeExtras } from "./NativeExtras";
+import { IdleSignOut } from "./IdleSignOut";
 import { useSession } from "../lib/session";
 import { dmy, inr } from "../lib/format";
 import type { LoanBrief } from "../lib/types";
@@ -143,8 +144,6 @@ function Search() {
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { session, canEdit } = useSession();
   const pay = useRecordPayment();
-  const qc = useQueryClient();
-  const nav = useNavigate();
   const groups: [string, NavItem[]][] = [
     ["Workspace", [
       { to: "/", label: "Overview", icon: "home", end: true },
@@ -166,17 +165,11 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       { to: "/settings", label: "Settings", icon: "cog" },
     ]],
   ];
-  const logout = useAction(async () => {
-    if (!isNative) return post("/api/logout");
-    // the app: end this phone's sign-in on the server, then forget the token and reminders
-    try { await post("/api/device/logout"); } catch { /* already signed out */ }
-    await setToken(null);
-    configureApp((await getServer()) ?? "", null);
-    await cancelDueReminders().catch(() => {});
-    return { message: undefined };
-  }, { quiet: true, onDone: () => { qc.clear(); nav("/login"); } });
+  const signOut = useSignOut();
+  const [leaving, setLeaving] = useState(false);
+
   return (
-    <div className="safe-top safe-bottom flex h-full flex-col overflow-y-auto bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] px-[15px] pt-6 pb-4 text-[#e9f4f1]">
+    <div className="flex h-full flex-col overflow-y-auto bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] px-[15px] pt-[calc(1.5rem+var(--sat))] pb-[calc(1rem+var(--sab))] text-[#e9f4f1]">
       <Link to="/" onClick={onNavigate} className="flex items-center gap-[11px] px-2.5 pb-8">
         <span className="grid size-[38px] place-items-center rounded-xl bg-[#f3a64d] font-display text-[22px] font-extrabold text-[#103b3d]">L</span>
         <span><b className="block font-display text-xl font-extrabold tracking-[-.6px]">Ledgerly</b>
@@ -218,7 +211,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <span className="grid size-[34px] place-items-center rounded-full bg-[#d7f2e9] font-extrabold text-[#087766] uppercase">{session?.user?.slice(0, 2)}</span>
         <span className="min-w-0 flex-1"><b className="block truncate text-xs">{session?.user}</b>
           <small className="block text-[10px] text-[#9db9b6]">{session?.role === "OWNER" ? "Owner · full access" : "Viewer · read only"}</small></span>
-        <button type="button" onClick={() => logout.mutate(undefined)} className="grid size-8 place-items-center rounded-lg text-[#a9c8c3] hover:bg-[#0b6866]" aria-label="Log out" title="Log out">
+        <button type="button" disabled={leaving} onClick={() => { setLeaving(true); signOut(); }} className="grid size-8 place-items-center rounded-lg text-[#a9c8c3] hover:bg-[#0b6866]" aria-label="Log out" title="Log out">
           <Icon name="logout" className="size-4" />
         </button>
       </div>
@@ -255,7 +248,7 @@ export function Shell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className={cx("app-main min-w-0 flex-1 lg:ml-[244px]", !canEdit && "viewer")}>
-          <div className="no-print safe-top sticky top-0 z-20 bg-card">
+          <div className="no-print sticky top-0 z-20 bg-deep pt-[var(--sat)]">
           <header className="flex h-[64px] items-center justify-between gap-3 border-b border-line bg-card px-3.5 sm:h-[70px] sm:px-9">
             <div className="flex min-w-0 items-center gap-2">
               <button type="button" className="grid size-[38px] place-items-center rounded-lg border border-line lg:hidden" aria-label="Open menu" onClick={() => setDrawer(true)}>
@@ -289,11 +282,12 @@ export function Shell({ children }: { children?: ReactNode }) {
               SECRET_KEY is weak or a default. Set a long random value in .env before using this for real money.
             </div>
           )}
-          <main className="safe-bottom mx-auto max-w-[1600px] px-3.5 pt-6 pb-16 sm:px-[38px] sm:pt-[34px]">{children ?? <Outlet />}</main>
+          <main className="mx-auto max-w-[1600px] px-3.5 pt-6 pb-[calc(4rem+var(--sab))] sm:px-[38px] sm:pt-[34px]">{children ?? <Outlet />}</main>
         </div>
       </div>
       <RecordPayment open={pay.open} loanId={pay.loanId} onClose={() => setPay({ open: false })} />
       <NativeExtras />
+      <IdleSignOut />
     </PayCtx.Provider>
   );
 }

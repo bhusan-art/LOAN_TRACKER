@@ -61,9 +61,12 @@
   input[type=file]::file-selector-button { @apply mr-3 cursor-pointer rounded-md border-0 bg-tealsoft px-3 py-2 text-xs font-bold text-teal; }
 }
 
-/* Android app: keep content clear of the status bar and gesture bar (Capacitor sets these) */
-.safe-top { padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px)); }
-.safe-bottom { padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)); }
+/* Android app: the status bar and gesture bar heights (Capacitor sets the variables; 0 in a
+   browser). Elements add them to their own padding, e.g. pb-[calc(4rem+var(--sab))]. */
+:root {
+  --sat: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --sab: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+}
 
 @media print {
   .no-print { display: none !important; }

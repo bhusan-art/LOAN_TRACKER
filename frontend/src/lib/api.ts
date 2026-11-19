@@ -56,6 +56,14 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   }
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith("/api/public/") && !path.startsWith("/api/login") && !path.startsWith("/api/device/login")) {
+      if (data?.reason && data?.detail) {
+        try {
+          // keep a reason already noted (an idle sign-out explains itself better)
+          if (!sessionStorage.getItem("signedOutReason")) sessionStorage.setItem("signedOutReason", data.detail);
+        } catch {
+          /* private mode */
+        }
+      }
       window.dispatchEvent(new Event("ledgerly:logged-out"));
     }
     throw new ApiError(res.status, (data && (data.detail as string)) || `Request failed (${res.status})`);
