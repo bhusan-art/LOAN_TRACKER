@@ -64,6 +64,28 @@ def cmd_users(args) -> None:
     print(f"'{args.username}' {'can log in again' if args.cmd == 'enable-user' else 'is disabled and logged out everywhere'}.")
 
 
+def cmd_devices(args) -> None:
+    """Phones signed in to the Android app; sign one out (e.g. a lost phone)."""
+    from datetime import datetime, timezone
+    from loan_tracker import services as svc
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        if args.cmd == "list-devices":
+            rows = svc.list_devices(s)
+            if not rows:
+                print("No phones have signed in.")
+            for d in rows:
+                last = d.last_used_at.strftime("%d %b %Y") if d.last_used_at else "-"
+                print(f"{d.id:<5} {d.user.username:<16} {d.name[:30]:<31} {svc.resolve_device_state(d, now).lower():<11} last used {last}")
+            return
+        try:
+            d = svc.revoke_device(s, args.device_id, actor="cli", now=now)
+        except svc.ServiceError as exc:
+            sys.exit(str(exc))
+        svc.audit(s, "cli", "DEVICE_SIGNED_OUT", "app_device", d.id, name=d.name)
+    print(f"Phone {args.device_id} is signed out; it must sign in again.")
+
+
 def cmd_run_job(args) -> None:
     from loan_tracker.jobs.daily import build_digest, run_daily
     from loan_tracker.jobs.notify import default_senders
@@ -160,6 +182,9 @@ def main(argv=None) -> None:
     for name in ("disable-user", "enable-user"):
         d = sub.add_parser(name)
         d.add_argument("username")
+    sub.add_parser("list-devices", help="phones signed in to the Android app")
+    rd = sub.add_parser("revoke-device", help="sign a phone out (e.g. lost phone)")
+    rd.add_argument("device_id", type=int)
     j = sub.add_parser("run-job")
     j.add_argument("--date")
     j.add_argument("--dry-run", action="store_true")
@@ -184,6 +209,8 @@ def main(argv=None) -> None:
         cmd_demo_data(args)
     elif args.cmd in ("list-users", "disable-user", "enable-user"):
         cmd_users(args)
+    elif args.cmd in ("list-devices", "revoke-device"):
+        cmd_devices(args)
     elif args.cmd == "gen-doc-key":
         from loan_tracker.docvault import new_key
         print(f"DOCUMENT_KEY={new_key()}")

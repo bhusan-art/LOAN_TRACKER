@@ -61,6 +61,10 @@
   input[type=file]::file-selector-button { @apply mr-3 cursor-pointer rounded-md border-0 bg-tealsoft px-3 py-2 text-xs font-bold text-teal; }
 }
 
+/* Android app: keep content clear of the status bar and gesture bar (Capacitor sets these) */
+.safe-top { padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px)); }
+.safe-bottom { padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)); }
+
 @media print {
   .no-print { display: none !important; }
   .app-main { margin-left: 0 !important; }

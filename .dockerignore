@@ -11,3 +11,4 @@ tests
 .hypothesis
 frontend/node_modules
 loan_tracker/web/spa
+frontend/android

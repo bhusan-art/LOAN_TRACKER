@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, setBookCookie, setCsrf } from "./api";
+import { api, setBookCookie, setBookHeader, setCsrf } from "./api";
+import { isNative } from "./native";
 import type { SessionInfo } from "./types";
 
 type Ctx = {
@@ -27,7 +28,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     staleTime: 60_000,
   });
-  const [book, setBookState] = useState("all");
+  const [book, setBookState] = useState(() => {
+    if (!isNative) return "all";
+    try {
+      const b = localStorage.getItem("book") ?? "all";
+      setBookHeader(b);
+      return b;
+    } catch {
+      return "all";
+    }
+  });
   const [dark, setDark] = useState(() => {
     try {
       return localStorage.getItem("theme") === "dark";
@@ -36,7 +46,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   });
   useEffect(() => {
-    if (q.data?.book) setBookState(q.data.book);
+    if (q.data?.book && !isNative) setBookState(q.data.book);
   }, [q.data?.book]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -54,7 +64,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const setBook = useCallback(
     (b: string) => {
-      setBookCookie(b);
+      if (isNative) {
+        setBookHeader(b);                    // the app sends no cookies: the book goes in a header
+        try {
+          localStorage.setItem("book", b);
+        } catch {
+          /* not remembered */
+        }
+      } else setBookCookie(b);
       setBookState(b);
       qc.invalidateQueries({ predicate: (x) => x.queryKey[0] !== "session" });
     },

@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { useSession } from "../lib/session";
 import { dmy, dshort, inr, rateText } from "../lib/format";
 import type { Issuer, LoanPage } from "../lib/types";
-import { Icon } from "../components/Icon";
+import { PrintButton } from "../components/FileButton";
 import { cx, ErrorBox, Loading, PageHead, Row, StatusTag } from "../components/ui";
 
 export default function Statement() {
@@ -19,7 +19,7 @@ export default function Statement() {
       <div className="no-print"><PageHead eyebrow="Statement" title={`LN-${l.id} · ${l.party_name}`} scope={false}
         sub="Everything on this loan as of today. Print it or save it as a PDF."
         actions={<><Link className="btn" to={`/loans/${l.id}`}>Back to loan</Link>
-          <button type="button" className="btn btn-primary" onClick={() => window.print()}><Icon name="print" className="size-4" />Print / save PDF</button></>} /></div>
+          <PrintButton /></>} /></div>
       <article className="card mx-auto max-w-[900px] p-6 sm:p-10">
         <header className="flex flex-wrap justify-between gap-4 border-b border-line pb-5">
           <div><b className="block font-display text-xl font-extrabold">{d.issuer.name || "Loan statement"}</b>

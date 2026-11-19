@@ -94,6 +94,49 @@ and set `PUBLIC_URL=https://your-domain` in `.env`. With Tailscale only you and 
 can open them. A link shows that borrower's own loan, read-only, and stops working when it
 expires or when you switch it off.
 
+### Android app (Ledgerly)
+
+The same screens as a real Android app, with fingerprint unlock, due reminders as phone
+notifications and Android's share sheet for documents and receipts. It talks to your PC over
+Tailscale, so nothing is opened to the internet.
+
+**1. Give the PC an https address (once).** In the Tailscale admin console turn on
+*DNS → HTTPS Certificates*. Then on the PC (with Ledgerly running on port 8000):
+```powershell
+tailscale serve --bg 8000
+```
+Tailscale prints the address, like `https://my-pc.tail1234.ts.net`. Open it in the phone's
+browser (Tailscale on) to check that the login page appears. The app only accepts https.
+
+**2. Make a signing key (once; keep it safe, like a password).** Every update must be signed
+with the same key, or the phone refuses to install it over the old app.
+```powershell
+keytool -genkeypair -v -keystore ledgerly.jks -alias ledgerly -keyalg RSA -keysize 4096 -validity 10000
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("ledgerly.jks")) | Set-Clipboard
+```
+(`keytool` comes with Java. Never commit `ledgerly.jks`.) On GitHub: repository *Settings →
+Secrets and variables → Actions → New repository secret*, four times:
+`ANDROID_KEYSTORE_BASE64` (paste the clipboard), `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS` (`ledgerly`) and `ANDROID_KEY_PASSWORD`.
+
+**3. Build the app.** Tag a version and push the tag:
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+GitHub Actions builds it (about 10 minutes, *Actions* tab); the APK appears under
+*Releases → Ledgerly v1.0.0 → ledgerly-1.0.0.apk*. For a later update, tag `v1.0.1` and so on.
+
+**4. Install it.** On the phone open the release page, download the `.apk`, allow your
+browser to install apps when Android asks, and install. Open **Ledgerly**, enter the https
+address from step 1 and sign in with your password and authenticator code.
+*Settings* in the app: fingerprint lock and due reminders.
+
+**A lost phone:** in Ledgerly on the PC open *Settings → Phones with the Ledgerly app →
+Sign out*, or run `python -m loan_tracker.cli list-devices` and
+`python -m loan_tracker.cli revoke-device <id>`. A password reset signs out every phone.
+Phones unused for 90 days must sign in again.
+
 ## 5. Backups (do this)
 
 - Windows: schedule `deploy\backup.ps1` daily in Task Scheduler (7-Zip + `BACKUP_PASSPHRASE` encrypts it).
@@ -143,6 +186,7 @@ loan_tracker/services.py   the only code that writes; appends ledger rows, rebui
 loan_tracker/reports.py    dashboard, cash calendar, FY report, CSV export
 loan_tracker/web/      FastAPI app: JSON API at /api/* (views.py = one payload per screen), serves the built React app
 frontend/              React + TypeScript + Tailwind screens (design: docs/design/ledgerly-option1)
+frontend/android/      Android app project (Capacitor); built by .github/workflows/android.yml
 loan_tracker/jobs/     daily job and Telegram/email senders
 loan_tracker/cli.py    migrate, create-user, run-job, scheduler, demo-data
 tests/engine/          engine tests incl. worked examples and property tests

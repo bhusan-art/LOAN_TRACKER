@@ -86,6 +86,10 @@ class LoginIn(BaseModel):
     code: str = Field("", max_length=12)
 
 
+class DeviceLoginIn(LoginIn):
+    device_name: str = Field("Phone", max_length=100)
+
+
 class PartyUpdateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     phone: str = Field("", max_length=40)
@@ -239,13 +243,9 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
     @app.get("/api/session")
     def api_session(request: Request, s: Session = Depends(db)):
         """Who is logged in, plus the CSRF token every non-GET /api call must send back."""
-        name = request.session.get("user")
-        u = s.scalar(select(m.AppUser).where(m.AppUser.username == name)) if name else None
-        if u is not None and (u.disabled_at is not None or request.session.get("epoch") != u.session_epoch):
-            request.session.clear()
-            u = None
+        u = h.who(request, s)
         out = {"csrf": h.csrf_token(request), "user": None, "today": J(today()), "book": h.book_of(request),
-               "timezone": settings.timezone}
+               "timezone": settings.timezone, "device_id": getattr(request.state, "device_id", None)}
         if u is not None:
             overdue = s.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
             out.update(user=u.username, role=u.role, nav_overdue=overdue, insecure_secret=h.insecure_secret,
@@ -253,8 +253,8 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
                        public_url=settings.public_url or None)
         return out
 
-    @app.post("/api/login")
-    def api_login(request: Request, payload: LoginIn, s: Session = Depends(db)):
+    def check_login(request: Request, payload: LoginIn, s: Session) -> m.AppUser | JSONResponse:
+        """Password + authenticator code, with the per-address attempt limit."""
         ip = request.client.host if request.client else "?"
         now = time.time()
         fails = h.recent_failures(app.state.failed_logins, ip, now)
@@ -271,6 +271,50 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
             h.log(request, s, "LOGIN_FAILED", actor=uname[:100])
             return JSONResponse({"detail": "Wrong username, password or code."}, status_code=401)
         fails.clear()
+        return u
+
+    @app.post("/api/device/login", status_code=201)
+    def api_device_login(request: Request, payload: DeviceLoginIn, s: Session = Depends(db)):
+        """Sign a phone in to the Android app: returns its token once (only a hash is kept)."""
+        u = check_login(request, payload, s)
+        if isinstance(u, JSONResponse):
+            return u
+        d, token = svc.create_device(s, u, payload.device_name, datetime.now(timezone.utc))
+        h.log(request, s, "DEVICE_SIGNED_IN", "app_device", d.id, actor=u.username, name=d.name, role=u.role)
+        return {"token": token, "device_id": d.id, "user": u.username, "role": u.role}
+
+    @app.post("/api/device/logout")
+    def api_device_logout(request: Request, username: str = Depends(user), s: Session = Depends(db)):
+        dev = getattr(request.state, "device_id", None)
+        if dev is None:
+            raise svc.ServiceError("this is not a phone sign-in")
+        svc.revoke_device(s, dev, actor=username, now=datetime.now(timezone.utc))
+        log(request, s, "DEVICE_SIGNED_OUT", "app_device", dev)
+        return {"ok": True}
+
+    @app.get("/api/devices")
+    def api_devices(request: Request, username: str = Depends(user), s: Session = Depends(db)):
+        """Phones signed in to the app: the owner sees every user's, a viewer only their own."""
+        me = s.scalar(select(m.AppUser).where(m.AppUser.username == username))
+        rows = svc.list_devices(s, None if request.state.role == "OWNER" else me.id)
+        now = datetime.now(timezone.utc)
+        return [{"id": d.id, "name": d.name, "user": d.user.username, "created_at": J(d.created_at),
+                 "last_used_at": J(d.last_used_at), "revoked_at": J(d.revoked_at),
+                 "live": svc.resolve_device_state(d, now) == "LIVE", "state": svc.resolve_device_state(d, now),
+                 "current": d.id == getattr(request.state, "device_id", None)} for d in rows]
+
+    @app.post("/api/devices/{device_id}/revoke")
+    def api_device_revoke(device_id: int, request: Request, username: str = Depends(owner_only),
+                          s: Session = Depends(db)):
+        d = svc.revoke_device(s, device_id, actor=username, now=datetime.now(timezone.utc))
+        log(request, s, "DEVICE_SIGNED_OUT", "app_device", d.id, name=d.name, note=f"user {d.user.username}")
+        return {"id": d.id, "message": f"{d.name} is signed out. It must sign in again to open the app."}
+
+    @app.post("/api/login")
+    def api_login(request: Request, payload: LoginIn, s: Session = Depends(db)):
+        u = check_login(request, payload, s)
+        if isinstance(u, JSONResponse):
+            return u
         request.session.clear()            # new session on login (prevents session fixation)
         request.session["user"] = u.username
         request.session["epoch"] = u.session_epoch

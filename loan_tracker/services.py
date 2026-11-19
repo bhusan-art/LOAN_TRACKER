@@ -1236,3 +1236,78 @@ def audit_log(s: Session, limit: int = 200, loan_id: int | None = None) -> list[
 
 def funding_links(s: Session) -> list[m.FundingLink]:
     return list(s.scalars(select(m.FundingLink).order_by(m.FundingLink.link_date)))
+
+
+# ------------------------------------------------------------------ phones (Android app)
+DEVICE_IDLE_DAYS = 90            # a phone not used for this long must sign in again
+DEVICE_TOUCH_MINUTES = 60        # "last used" is written at most this often
+
+
+def _device_hash(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(("loan-tracker device\x00" + token).encode()).hexdigest()
+
+
+def create_device(s: Session, user: m.AppUser, name: str, now) -> tuple[m.AppDevice, str]:
+    """Sign a phone in. The token is returned once; only its hash is kept."""
+    import secrets as _secrets
+    name = " ".join((name or "").split())[:100] or "Phone"
+    token = "ld_" + _secrets.token_urlsafe(32)                  # 256 random bits
+    d = m.AppDevice(user_id=user.id, name=name, token_hash=_device_hash(token),
+                    session_epoch=user.session_epoch, created_at=now, last_used_at=now)
+    s.add(d)
+    s.flush()
+    return d, token
+
+
+def resolve_device(s: Session, token: str, now) -> m.AppDevice | None:
+    """The live device for a bearer token, or None (unknown, signed out, idle too long,
+    user disabled, or password reset since sign-in)."""
+    from datetime import timedelta as _td
+    import re as _re
+    if not token or len(token) > 100 or not _re.fullmatch(r"ld_[A-Za-z0-9_-]+", token):
+        return None
+    d = s.scalar(select(m.AppDevice).where(m.AppDevice.token_hash == _device_hash(token)))
+    if d is None or d.revoked_at is not None:
+        return None
+    u = d.user
+    if u.disabled_at is not None or u.session_epoch != d.session_epoch:
+        return None
+    last = d.last_used_at or d.created_at
+    if now - last > _td(days=DEVICE_IDLE_DAYS):
+        return None
+    if now - last > _td(minutes=DEVICE_TOUCH_MINUTES):
+        d.last_used_at = now
+        s.flush()
+    return d
+
+
+def resolve_device_state(d: m.AppDevice, now) -> str:
+    """LIVE, SIGNED_OUT, ENDED (password reset / user disabled) or IDLE (unused too long)."""
+    from datetime import timedelta as _td
+    if d.revoked_at is not None:
+        return "SIGNED_OUT"
+    if d.user.disabled_at is not None or d.user.session_epoch != d.session_epoch:
+        return "ENDED"
+    if now - (d.last_used_at or d.created_at) > _td(days=DEVICE_IDLE_DAYS):
+        return "IDLE"
+    return "LIVE"
+
+
+def list_devices(s: Session, user_id: int | None = None) -> list[m.AppDevice]:
+    q = select(m.AppDevice).order_by(m.AppDevice.revoked_at.is_not(None), m.AppDevice.created_at.desc())
+    if user_id is not None:
+        q = q.where(m.AppDevice.user_id == user_id)
+    return list(s.scalars(q))
+
+
+def revoke_device(s: Session, device_id: int, *, actor: str, now, user_id: int | None = None) -> m.AppDevice:
+    d = s.get(m.AppDevice, device_id)
+    if d is None or (user_id is not None and d.user_id != user_id):
+        raise ServiceError(f"phone {device_id} not found")
+    if d.revoked_at is not None:
+        raise ServiceError("this phone is already signed out")
+    d.revoked_at = now
+    d.revoked_by = actor or "unknown"
+    s.flush()
+    return d

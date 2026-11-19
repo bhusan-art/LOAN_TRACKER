@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, configureApp } from "../lib/api";
+import { deviceName, getServer, isNative, setToken } from "../lib/native";
 import { useSession } from "../lib/session";
 import { Alert, Field } from "../components/ui";
 
@@ -12,6 +13,8 @@ export default function Login() {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [server, setServerShown] = useState<string | null>(null);
+  useEffect(() => { if (isNative) getServer().then(setServerShown); }, []);
   const next = params.get("next");
   const target = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
   if (session?.user) return <Navigate to={target} replace />;
@@ -22,7 +25,15 @@ export default function Login() {
     setBusy(true);
     setError(null);
     try {
-      await api("/api/login", { json: { username: f.get("username"), password: f.get("password"), code: f.get("code") ?? "" } });
+      const creds = { username: f.get("username"), password: f.get("password"), code: f.get("code") ?? "" };
+      if (isNative) {
+        // the app gets its own sign-in (a token for this phone) instead of a browser cookie
+        const r = await api<{ token: string }>("/api/device/login", { json: { ...creds, device_name: deviceName() } });
+        await setToken(r.token);
+        configureApp(server ?? "", r.token);
+      } else {
+        await api("/api/login", { json: creds });
+      }
       await qc.invalidateQueries();
       nav(target, { replace: true });
     } catch (err) {
@@ -33,7 +44,7 @@ export default function Login() {
   }
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-[1.1fr_1fr]">
+    <div className="safe-top grid min-h-screen lg:grid-cols-[1.1fr_1fr]">
       <div className="hidden flex-col justify-between bg-gradient-to-b from-[#082e34] via-[#06474a] to-[#07353a] p-12 text-[#e9f4f1] lg:flex">
         <div className="flex items-center gap-3">
           <span className="grid size-11 place-items-center rounded-xl bg-[#f3a64d] font-display text-2xl font-extrabold text-[#103b3d]">L</span>
@@ -62,6 +73,10 @@ export default function Login() {
             </Field>
           </div>
           <button className="btn btn-primary mt-6 w-full py-3 text-sm" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+          {isNative && (
+            <p className="mt-4 text-center text-[11px] break-all text-muted">Server: {server ?? "…"} ·{" "}
+              <button type="button" className="link" onClick={() => window.dispatchEvent(new Event("ledgerly:change-server"))}>Change</button></p>
+          )}
         </form>
       </div>
     </div>

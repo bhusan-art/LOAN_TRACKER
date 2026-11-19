@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { useSession } from "../lib/session";
 import { dmy, inr, rateText } from "../lib/format";
 import type { Issuer, Loan, Party } from "../lib/types";
-import { Icon } from "../components/Icon";
+import { PrintButton } from "../components/FileButton";
 import { Alert, ErrorBox, Loading, PageHead, Row } from "../components/ui";
 
 type C = { loan: Loan; party: Party; issuer: Issuer; status: string; closed_on: string | null; lent_paise: number; received_paise: number;
@@ -23,7 +23,7 @@ export default function Closure() {
       <div className="no-print">
         <PageHead eyebrow="Loan closure" title="No-dues certificate" scope={false} sub={`For ${c.party.name} · LN-${l.id}. Print it or save it as PDF and share it.`}
           actions={<><Link className="btn" to={`/loans/${l.id}`}>Back to loan</Link>
-            <button type="button" className="btn btn-primary" onClick={() => window.print()}><Icon name="print" className="size-4" />Print / save PDF</button></>} />
+            <PrintButton /></>} />
         {!c.issuer.name && <div className="mb-4"><Alert tone="teal">Your name is not on the certificate yet. Set <b>RECEIPT_NAME</b> in <code>.env</code>, then restart the app.</Alert></div>}
       </div>
       <article className="card mx-auto max-w-[820px] p-6 sm:p-10">

@@ -9,3 +9,7 @@ backups/
 .hypothesis/
 node_modules/
 loan_tracker/web/spa/
+
+# Android signing key: never commit
+*.jks
+*.keystore

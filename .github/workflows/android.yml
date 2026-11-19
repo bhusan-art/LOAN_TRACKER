@@ -1,0 +1,102 @@
+# Builds the Ledgerly Android app (.apk).
+#  - Push a tag like v1.0.0 -> a signed APK is attached to a GitHub Release of that name.
+#  - Actions tab -> "Android app" -> Run workflow -> the APK is kept as a download (artifact).
+# Signing uses four repository secrets (README "Android app"): ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD. Without them a debug
+# APK is built for testing only.
+name: Android app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # to create the release
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install, test and build the screens
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build:app
+          npx cap sync android
+
+      - name: Version from the tag
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then name="${GITHUB_REF_NAME#v}"; else name="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Signing key
+        id: key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ledgerly.jks"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No signing key in the repository secrets: building a DEBUG apk for testing only."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the APK
+        working-directory: frontend/android
+        env:
+          LEDGERLY_KEYSTORE: ${{ steps.key.outputs.signed == 'true' && format('{0}/ledgerly.jks', runner.temp) || '' }}
+          LEDGERLY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          LEDGERLY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          LEDGERLY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          task=assembleDebug; [[ "${{ steps.key.outputs.signed }}" == "true" ]] && task=assembleRelease
+          ./gradlew --no-daemon "$task" -PledgerlyVersionName="${{ steps.ver.outputs.name }}" -PledgerlyVersionCode="${{ steps.ver.outputs.code }}"
+          apk=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          out="$RUNNER_TEMP/ledgerly-${{ steps.ver.outputs.name }}.apk"
+          cp "$apk" "$out"
+          echo "APK=$out" >> "$GITHUB_ENV"
+          sha256sum "$out" | tee "$out.sha256"
+          rm -f "$RUNNER_TEMP/ledgerly.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledgerly-${{ steps.ver.outputs.name }}
+          path: |
+            ${{ env.APK }}
+            ${{ env.APK }}.sha256
+          retention-days: 30
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag' && steps.key.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Ledgerly $GITHUB_REF_NAME" --notes "Android app. Install the .apk on your phone (see README: Android app)."
+          gh release upload "$GITHUB_REF_NAME" "$APK" "$APK.sha256" --clobber

@@ -145,6 +145,21 @@ class AppUser(Base):
     session_epoch: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
+class AppDevice(Base):
+    """A phone signed in to the Android app. Only the token's hash is stored (DB trigger limits updates)."""
+    __tablename__ = "app_device"
+    id: Mapped[int] = mapped_column(ID, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ID, ForeignKey("app_user.id"))
+    name: Mapped[str] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text)
+    session_epoch: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(Text)
+    user: Mapped[AppUser] = relationship()
+
+
 class JobRun(Base):
     __tablename__ = "job_run"
     id: Mapped[int] = mapped_column(ID, primary_key=True)
