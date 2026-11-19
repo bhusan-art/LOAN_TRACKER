@@ -10,11 +10,11 @@ import { Card, Empty, ErrorBox, Loading, PageHead, PersonCell, TableWrap, Tag } 
 import { AddPerson } from "./LoanNew";
 
 export default function People() {
-  const { session, canEdit } = useSession();
+  const { canEdit, book } = useSession();
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
-  const rows = useQuery({ queryKey: ["parties", session?.book, q], queryFn: () => api<PartyRow[]>(`/api/ui/parties?q=${encodeURIComponent(q)}`) });
+  const rows = useQuery({ queryKey: ["parties", book, q], queryFn: () => api<PartyRow[]>(`/api/ui/parties?q=${encodeURIComponent(q)}`) });
   return (
     <>
       <PageHead eyebrow="Workspace" title="People" sub="Borrowers, lenders and their contact details."

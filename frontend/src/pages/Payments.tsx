@@ -10,7 +10,7 @@ import { Card, cx, Empty, ErrorBox, Loading, Metric, PageHead, PersonCell, Segme
 import { useRecordPayment } from "../components/Shell";
 
 export default function Payments() {
-  const { session, canEdit } = useSession();
+  const { canEdit, book } = useSession();
   const pay = useRecordPayment();
   const [params, setParams] = useSearchParams();
   const [dir, setDir] = useState<"" | "IN" | "OUT">("");
@@ -19,7 +19,7 @@ export default function Payments() {
   useEffect(() => {
     if (params.get("record") === "1" && canEdit) { pay(); setParams({}, { replace: true }); }
   }, [params, canEdit, pay, setParams]);
-  const r = useQuery({ queryKey: ["payments", session?.book], queryFn: () => api<PaymentRow[]>("/api/ui/payments") });
+  const r = useQuery({ queryKey: ["payments", book], queryFn: () => api<PaymentRow[]>("/api/ui/payments") });
   const all = r.data ?? [];
   const months = [...new Set(all.map((p) => p.entry_date.slice(0, 7)))];
   const rows = useMemo(() => all.filter((p) => (!dir || p.direction === dir) && (!month || p.entry_date.startsWith(month))

@@ -10,8 +10,8 @@ import { DocumentsCard } from "../components/Docs";
 
 export default function Person() {
   const { id } = useParams();
-  const { session, canEdit } = useSession();
-  const q = useQuery({ queryKey: ["party", id, session?.book], queryFn: () => api<PartyPage>(`/api/ui/parties/${id}`) });
+  const { canEdit, book } = useSession();
+  const q = useQuery({ queryKey: ["party", id, book], queryFn: () => api<PartyPage>(`/api/ui/parties/${id}`) });
   const save = useAction((b: Record<string, string>) => post(`/api/parties/${id}`, b));
   if (q.isLoading) return <Loading />;
   if (q.error || !q.data) return <ErrorBox error={q.error ?? "Not found"} />;

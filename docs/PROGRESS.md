@@ -140,3 +140,4 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - New: Payments page, Ctrl K search, "vs last month" trends; public borrower pages as React + /api/public JSON.
 - Tests: test_web.py ported to the API with the same expected numbers + new tests (288 pass); Vitest for formatting;
   browser click-through 70/70 (desktop, phone, viewer, borrower link). Dockerfile builds the app in a Node stage.
+- Review fixes: service worker registered again (installable); viewers can use What-if (READ_ONLY_POSTS); book switch query keys.

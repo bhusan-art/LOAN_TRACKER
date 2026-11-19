@@ -12,7 +12,7 @@ from loan_tracker import auth
 from loan_tracker import services as svc
 from loan_tracker.config import Settings
 from loan_tracker.db import models as m
-from loan_tracker.web.app import create_app
+from loan_tracker.web.app import READ_ONLY_POSTS, create_app
 
 SECRET = auth.new_totp_secret()
 
@@ -685,14 +685,29 @@ def test_every_write_route_refuses_viewers(client, s):
     for route in client.app.routes:
         path = getattr(route, "path", "")
         methods = (getattr(route, "methods", None) or set()) - {"GET", "HEAD", "OPTIONS"}
-        if not methods or path in ("/api/login", "/api/logout"):
+        if not methods or path in ("/api/login", "/api/logout") or path in READ_ONLY_POSTS:
             continue
         url = re.sub(r"\{[^}]+\}", "1", path)
         for method in methods:
             r = v.request(method, url, follow_redirects=False, json={})
             assert r.status_code == 403, f"{method} {path} -> {r.status_code}"
             checked += 1
-    assert checked >= 38          # every write route (HTML form routes are gone since Phase 17)
+    assert checked >= 35          # every write route (HTML form routes are gone since Phase 17)
+
+
+def test_viewer_can_use_the_what_if_simulator(client, s):
+    """Review: the simulator became a POST and the read-only guard refused it to viewers.
+    It saves nothing, so viewers may use it (as they could the old GET page)."""
+    login(client)
+    _, lid = new_loan(client, "Ravi", principal_paise=10_000_000, start_date="2026-04-01", due_day=1)
+    v = _viewer_client(client, s)
+    before = len(client.get(f"/api/loans/{lid}/entries").json())
+    r = v.post("/api/ui/simulate", json={"mode": "loan", "loan_id": lid, "kind": "EXTRA_PAYMENT", "on": "2026-05-01",
+                                         "amount": "50,000", "horizon": 6})
+    assert r.status_code == 200 and r.json()["result"]["actual"]["interest_paise"] > 0
+    assert v.post("/api/simulate/loan", json={"loan_id": lid, "kind": "PAYOFF", "on": "2026-05-01"}).status_code == 200
+    assert len(client.get(f"/api/loans/{lid}/entries").json()) == before                # nothing saved
+    assert v.post("/api/ui/simulate", json={"mode": "loan"}).status_code == 400          # still validated
 
 
 def test_disabled_user_and_password_reset_end_sessions(client, s):

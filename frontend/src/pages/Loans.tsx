@@ -9,7 +9,7 @@ import { Icon } from "../components/Icon";
 import { BookTag, Card, DirTag, Empty, ErrorBox, Loading, Metric, PageHead, PersonCell, Segmented, StatusTag, TableWrap } from "../components/ui";
 
 export default function Loans() {
-  const { session, canEdit } = useSession();
+  const { canEdit, book } = useSession();
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState(params.get("q") ?? "");
   const direction = params.get("direction") ?? "";
@@ -19,7 +19,7 @@ export default function Loans() {
     if (v) p.set(k, v); else p.delete(k);
     setParams(p, { replace: true });
   };
-  const loans = useQuery({ queryKey: ["loans", session?.book], queryFn: () => api<LoanBrief[]>("/api/ui/loans") });
+  const loans = useQuery({ queryKey: ["loans", book], queryFn: () => api<LoanBrief[]>("/api/ui/loans") });
   const all = loans.data ?? [];
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();

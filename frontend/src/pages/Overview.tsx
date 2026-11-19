@@ -35,9 +35,9 @@ function DueRow({ item, money }: { item: TodayItem; money: "in" | "out" }) {
 }
 
 export default function Overview() {
-  const { session, canEdit } = useSession();
+  const { session, canEdit, book } = useSession();
   const pay = useRecordPayment();
-  const q = useQuery({ queryKey: ["home", session?.book], queryFn: () => api<Home>("/api/ui/home") });
+  const q = useQuery({ queryKey: ["home", book], queryFn: () => api<Home>("/api/ui/home") });
   const d = q.data;
   return (
     <>

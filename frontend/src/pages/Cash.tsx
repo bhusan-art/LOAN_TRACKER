@@ -28,10 +28,10 @@ function BalanceForm({ acc, onClose }: { acc: CashAccount | null; onClose: () =>
 }
 
 export default function Cash() {
-  const { session, canEdit } = useSession();
+  const { session, canEdit, book } = useSession();
   const [days, setDays] = useState(30);
   const [edit, setEdit] = useState<CashAccount | null>(null);
-  const q = useQuery({ queryKey: ["cash", session?.book, days], queryFn: () => api<CashPage>(`/api/ui/cash?days=${days}`) });
+  const q = useQuery({ queryKey: ["cash", book, days], queryFn: () => api<CashPage>(`/api/ui/cash?days=${days}`) });
   const addAcc = useAction((b: Record<string, string>) => post("/api/ui/cash/accounts", b));
   const active = useAction((v: { id: number; active: boolean }) => post(`/api/cash/accounts/${v.id}/active`, { active: v.active }));
   const plan = useAction((b: Record<string, string>) => post("/api/ui/cash/planned", b));

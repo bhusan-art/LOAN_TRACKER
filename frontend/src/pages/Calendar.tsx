@@ -25,9 +25,9 @@ function weeks(cal: CalendarDay[], start: string, end: string) {
 }
 
 export default function CalendarView() {
-  const { session } = useSession();
+  const { book } = useSession();
   const [days, setDays] = useState(30);
-  const q = useQuery({ queryKey: ["calendar", session?.book, days], queryFn: () => api<CalendarPage>(`/api/ui/calendar?days=${days}`) });
+  const q = useQuery({ queryKey: ["calendar", book, days], queryFn: () => api<CalendarPage>(`/api/ui/calendar?days=${days}`) });
   const d = q.data;
   const active = d?.calendar.filter((c) => c.money_in.length || c.money_out.length) ?? [];
   const end = d ? (d.running.at(-1)?.day ?? d.today) : "";

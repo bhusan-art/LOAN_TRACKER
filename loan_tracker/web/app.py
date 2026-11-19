@@ -35,6 +35,10 @@ BOOKS = {"all": None, "business": "BUSINESS", "personal": "PERSONAL"}
 PUBLIC_PATHS = ("/login", "/static", "/healthz", "/manifest.webmanifest", "/sw.js")
 
 
+# POSTs that only calculate and save nothing (the what-if simulator): viewers may use them
+READ_ONLY_POSTS = frozenset({"/api/ui/simulate", "/api/simulate/loan", "/api/simulate/new-loan"})
+
+
 class ReadOnly(Exception):
     """A viewer tried to change something."""
 
@@ -137,7 +141,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             request.session.clear()
             raise LoginRequired()
         request.state.role = u.role
-        if u.role != "OWNER" and request.method not in ("GET", "HEAD"):
+        if u.role != "OWNER" and request.method not in ("GET", "HEAD") and request.url.path not in READ_ONLY_POSTS:
             raise ReadOnly()
         return name
 

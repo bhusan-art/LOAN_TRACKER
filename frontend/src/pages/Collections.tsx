@@ -34,8 +34,8 @@ const SECTIONS: [keyof Omit<CollectionsPage, "as_of">, string, string, string][]
 ];
 
 export default function Collections() {
-  const { session } = useSession();
-  const q = useQuery({ queryKey: ["collections", session?.book], queryFn: () => api<CollectionsPage>("/api/ui/collections") });
+  const { book } = useSession();
+  const q = useQuery({ queryKey: ["collections", book], queryFn: () => api<CollectionsPage>("/api/ui/collections") });
   const d = q.data;
   const total = d ? SECTIONS.reduce((a, [k]) => a + d[k].length, 0) : 0;
   return (

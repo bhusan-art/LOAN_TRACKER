@@ -11,8 +11,8 @@ type R = { fy: { fy: string; book: string; earned: number; paid: number; receive
   overdue: TodayItem[]; cross_book: { link: { id: number; amount_paise: number; link_date: string }; taken: Loan; given: Loan }[] };
 
 export default function Reports() {
-  const { session } = useSession();
-  const q = useQuery({ queryKey: ["reports", session?.book], queryFn: () => api<R>("/api/ui/reports") });
+  const { book } = useSession();
+  const q = useQuery({ queryKey: ["reports", book], queryFn: () => api<R>("/api/ui/reports") });
   const d = q.data;
   return (
     <>
