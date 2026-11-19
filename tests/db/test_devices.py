@@ -266,3 +266,14 @@ def test_idle_limits_are_settings(s):
         assert _bounded_int("SESSION_IDLE_MINUTES", 30, 5, 1440) == 5           # cannot be switched off
     finally:
         del os.environ["SESSION_IDLE_MINUTES"]
+
+
+def test_cors_allows_the_windows_app(app_client):
+    pre = TestClient(app_client.app).options("/api/device/login", headers={
+        "Origin": "https://tauri.localhost", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type"})
+    assert pre.status_code == 200 and pre.headers["access-control-allow-origin"] == "https://tauri.localhost"
+    p = phone(app_client, name="Windows PC")
+    r = p.get("/api/devices", headers={"Origin": "https://tauri.localhost"})
+    assert r.headers["access-control-allow-origin"] == "https://tauri.localhost" and r.json()[0]["name"] == "Windows PC"
+    assert "content-disposition" in r.headers["access-control-expose-headers"].lower()

@@ -4,7 +4,7 @@ import { api, post } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useToast } from "../lib/toast";
 import { when } from "../lib/format";
-import { cancelDueReminders, canLock, getFlag, getServer, isNative, setFlag, unlock } from "../lib/native";
+import { cancelDueReminders, canLock, getFlag, getServer, isAndroid, isNative, setFlag, unlock } from "../lib/native";
 import { Icon } from "../components/Icon";
 import { Alert, Card, CardHead, Confirm, Empty, ErrorBox, Loading, PageHead, Row, Tag, useAction } from "../components/ui";
 
@@ -25,7 +25,7 @@ function Toggle({ label, sub, on, onChange, disabled }: { label: string; sub: st
   );
 }
 
-function ThisPhone() {
+function ThisDevice() {
   const toast = useToast();
   const qc = useQueryClient();
   const [server, setServer] = useState<string | null>(null);
@@ -34,15 +34,17 @@ function ThisPhone() {
   const [lockable, setLockable] = useState(true);
   useEffect(() => {
     getServer().then(setServer);
+    if (!isAndroid) return;
     getFlag("lock", false).then(setLock);
     getFlag("remind", true).then(setRemind);
     canLock().then(setLockable).catch(() => setLockable(false));
   }, []);
   return (
     <Card>
-      <CardHead title="This phone" icon="phone" />
+      <CardHead title={isAndroid ? "This phone" : "This PC"} icon="phone" />
       <Row label="Server">{server ?? "…"}</Row>
       <div className="mb-2 text-right"><button type="button" className="link" onClick={() => window.dispatchEvent(new Event("ledgerly:change-server"))}>Change server</button></div>
+      {isAndroid && <>
       <Toggle label="Lock with fingerprint" disabled={!lockable}
         sub={lockable ? "Ask for your fingerprint or screen lock when the app opens, and after 30 seconds away." : "Set a screen lock on this phone first."}
         on={lock} onChange={async (v) => {
@@ -57,6 +59,7 @@ function ThisPhone() {
           else await qc.invalidateQueries({ queryKey: ["reminder-calendar"] });
           toast(v ? "Reminders are on. They refresh each time you open the app." : "Reminders are off.");
         }} />
+      </>}
     </Card>
   );
 }
@@ -71,10 +74,10 @@ export default function Settings() {
     <>
       <PageHead eyebrow="Account" title="Settings" scope={false} sub={`Signed in as ${session?.user} · ${session?.role === "OWNER" ? "owner" : "read-only viewer"}`} />
       <div className="grid gap-4 xl:grid-cols-2">
-        {isNative && <ThisPhone />}
+        {isNative && <ThisDevice />}
         <Card>
-          <CardHead title="Phones with the Ledgerly app" icon="shield"
-            sub={canEdit ? "Sign out a phone you lost or no longer use; it must sign in again with password and code." : "Your own phones."} />
+          <CardHead title="Phones and PCs with the Ledgerly app" icon="shield"
+            sub={canEdit ? "Sign out a phone or PC you lost or no longer use; it must sign in again with password and code." : "Your own phones and PCs."} />
           {q.error && <ErrorBox error={q.error} />}
           {q.isLoading ? <Loading /> : live.length ? live.map((d) => (
             <div key={d.id} className="flex flex-wrap items-center gap-3 border-b border-line py-3 last:border-0">
@@ -86,7 +89,7 @@ export default function Settings() {
                   {(open) => <button type="button" className="btn btn-sm" onClick={open}>Sign out</button>}
                 </Confirm>)}
             </div>
-          )) : <Empty icon="phone" title="No phones signed in" text="Install the Android app and sign in to see it here." />}
+          )) : <Empty icon="phone" title="No apps signed in" text="Install the Android or Windows app and sign in to see it here." />}
           {old.length > 0 && (
             <details className="mt-3 text-xs"><summary className="cursor-pointer font-bold text-muted">Earlier sign-ins ({old.length})</summary>
               {old.map((d) => <div key={d.id} className="flex items-center gap-2 border-b border-line py-2 last:border-0">
@@ -96,9 +99,9 @@ export default function Settings() {
         </Card>
         {!isNative && (
           <Card>
-            <CardHead title="Get the Android app" icon="phone" />
-            <Alert tone="teal">Download the latest <b>ledgerly-*.apk</b> from your GitHub repository's Releases page, install it, and connect it to
-              this server's Tailscale https address. The README has the steps.</Alert>
+            <CardHead title="Get the Android and Windows apps" icon="phone" />
+            <Alert tone="teal">Download the latest <b>ledgerly-*.apk</b> (Android) or <b>Ledgerly_*.msi</b> (Windows) from your GitHub
+              repository's Releases page, install it, and connect it to this server's Tailscale https address. The README has the steps.</Alert>
           </Card>
         )}
       </div>

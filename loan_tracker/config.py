@@ -61,9 +61,10 @@ class Settings:
     session_max_hours: int = field(default_factory=lambda: _bounded_int("SESSION_MAX_HOURS", 12, 1, 24 * 30))
     # one sign-in per user: signing in (browser or phone) signs that user out everywhere else
     single_session: bool = field(default_factory=lambda: _env("SINGLE_SESSION", "1") != "0")
-    # origins allowed to call the API with a phone token: the Android app's own pages
+    # origins allowed to call the API with a device token: the apps' own pages
+    # (Android: https://localhost, Windows: https://tauri.localhost)
     app_origins: tuple[str, ...] = field(default_factory=lambda: tuple(
-        o.strip().rstrip("/") for o in _env("APP_ORIGINS", "https://localhost").split(",") if o.strip()))
+        o.strip().rstrip("/") for o in _env("APP_ORIGINS", "https://localhost,https://tauri.localhost").split(",") if o.strip()))
     # documents (Phase 14): encryption key(s) and where the encrypted files live
     document_key: str = field(default_factory=lambda: _env("DOCUMENT_KEY"))
     document_key_old: str = field(default_factory=lambda: _env("DOCUMENT_KEY_OLD"))

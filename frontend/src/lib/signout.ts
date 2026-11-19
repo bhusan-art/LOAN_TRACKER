@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { configureApp, post } from "./api";
-import { cancelDueReminders, getServer, isNative, setToken } from "./native";
+import { cancelDueReminders, getServer, isAndroid, isNative, setToken } from "./native";
 import type { SessionInfo } from "./types";
 
 const REASON_KEY = "signedOutReason";
@@ -60,7 +60,7 @@ export function useSignOut() {
     if (isNative) {
       await setToken(null);
       configureApp((await getServer()) ?? "", null);
-      await cancelDueReminders().catch(() => {});
+      if (isAndroid) await cancelDueReminders().catch(() => {});
     }
     // mark the session signed out *before* leaving: the sign-in screen sends a signed-in
     // user back to the app, and cached money figures must not survive the sign-out
