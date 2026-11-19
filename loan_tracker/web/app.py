@@ -202,8 +202,8 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     @app.get("/manifest.webmanifest")
     def manifest():
         return JSONResponse({
-            "name": "Loan Tracker", "short_name": "Loans", "start_url": "/", "display": "standalone",
-            "background_color": "#ffffff", "theme_color": "#1f4e79",
+            "name": "Ledgerly", "short_name": "Ledgerly", "start_url": "/", "display": "standalone",
+            "background_color": "#f4f8f7", "theme_color": "#082f35",
             "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml"}],
         }, media_type="application/manifest+json")
 
@@ -496,7 +496,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         return {"id": d.id, "party_id": d.party_id, "loan_id": d.loan_id, "kind": d.kind, "title": d.title,
                 "file_name": d.file_name, "content_type": d.content_type, "size_bytes": d.size_bytes,
                 "sha256": d.sha256, "uploaded_by": d.uploaded_by, "created_at": d.created_at.isoformat(),
-                "url": f"/documents/{d.id}/file"}
+                "url": f"/api/documents/{d.id}/file"}
 
     @app.get("/api/documents")
     def api_documents(party_id: int | None = None, loan_id: int | None = None, _: str = Depends(owner_only),

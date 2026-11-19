@@ -56,7 +56,7 @@ function RecordPayment({ open, loanId, onClose }: { open: boolean; loanId?: numb
           <Field label="Date">{(id) => <input id={id} name="entry_date" type="date" className="input" defaultValue={session?.today} max={session?.today} />}</Field>
           <Field label="Mode">{(id) => (
             <select id={id} name="payment_mode" className="input">
-              <option value="CASH">Cash</option><option value="UPI">UPI</option><option value="BANK">Bank transfer</option><option value="CHEQUE">Cheque</option>
+              <option value="CASH">Cash</option><option value="UPI">UPI</option><option value="BANK">Bank transfer</option>
             </select>)}
           </Field>
           <Field label="Reference">{(id) => <input id={id} name="reference" className="input" maxLength={200} placeholder="UTR / cheque no." />}</Field>
@@ -243,7 +243,7 @@ export function Shell({ children }: { children?: ReactNode }) {
             <aside className="absolute inset-y-0 left-0 w-[270px] max-w-[85vw] shadow-2xl"><Sidebar onNavigate={() => setDrawer(false)} /></aside>
           </div>
         )}
-        <div className={cx("min-w-0 flex-1 lg:ml-[244px]", !canEdit && "viewer")}>
+        <div className={cx("app-main min-w-0 flex-1 lg:ml-[244px]", !canEdit && "viewer")}>
           <header className="no-print sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-line bg-card px-3.5 sm:h-[70px] sm:px-9">
             <div className="flex min-w-0 items-center gap-2">
               <button type="button" className="grid size-[38px] place-items-center rounded-lg border border-line lg:hidden" aria-label="Open menu" onClick={() => setDrawer(true)}>

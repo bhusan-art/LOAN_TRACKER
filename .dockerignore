@@ -9,3 +9,5 @@ docs
 tests
 .pytest_cache
 .hypothesis
+frontend/node_modules
+loan_tracker/web/spa

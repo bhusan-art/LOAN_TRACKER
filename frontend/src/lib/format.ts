@@ -87,7 +87,7 @@ export function pct(rate: string | null | undefined): string {
 }
 
 export function rateText(rate: string, unit: string): string {
-  return `${rate}% ${unit === "PER_ANNUM" ? "a year" : "a month"}`;
+  return `${rate}% ${unit === "PER_YEAR" ? "a year" : "a month"}`;
 }
 
 /** Days between two ISO dates (b - a). */

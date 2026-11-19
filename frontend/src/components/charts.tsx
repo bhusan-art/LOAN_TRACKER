@@ -105,12 +105,14 @@ export function BalanceChart({ series, buffer }: {
   if (!all.length) return null;
   const lo = Math.min(0, buffer, ...all), hi = Math.max(buffer, ...all, 1);
   const W = 700, H = 200, pad = 6;
-  const days = series[0].points.map((p) => p.day);
+  // x by calendar date, so series with different numbers of points line up; each runs to the end
+  const days = [...new Set(series.flatMap((s) => s.points.map((p) => p.day)))].sort();
   const n = days.length;
-  const x = (i: number) => (n <= 1 ? 0 : (i * W) / (n - 1));
+  const t0 = Date.parse(days[0]), t1 = Date.parse(days[n - 1]);
+  const x = (day: string) => (t1 === t0 ? 0 : ((Date.parse(day) - t0) / (t1 - t0)) * W);
   const y = (v: number) => pad + (1 - (v - lo) / (hi - lo || 1)) * (H - 2 * pad);
-  const path = (pts: { running_paise: number }[]) =>
-    pts.map((p, i) => (i ? `H${x(i)} V${y(p.running_paise)}` : `M${x(0)} ${y(p.running_paise)}`)).join(" ");
+  const path = (pts: { day: string; running_paise: number }[]) =>
+    pts.map((p, i) => (i ? `H${x(p.day)} V${y(p.running_paise)}` : `M${x(p.day)} ${y(p.running_paise)}`)).join(" ") + ` H${W}`;
   return (
     <div>
       <div className="relative h-[200px] pl-12">

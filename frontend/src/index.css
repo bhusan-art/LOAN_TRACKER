@@ -63,6 +63,8 @@
 
 @media print {
   .no-print { display: none !important; }
+  .app-main { margin-left: 0 !important; }
+  main { padding: 0 !important; }
   body { background: white; }
   .card { box-shadow: none; border-color: #ddd; }
 }

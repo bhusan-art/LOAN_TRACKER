@@ -40,7 +40,7 @@ def J(obj: Any) -> Any:
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, Decimal):
-        return str(obj.normalize()) if obj == obj.to_integral() else str(obj)
+        return f"{obj.normalize():f}"          # 1.5000 -> "1.5", 2.0000 -> "2"
     if is_dataclass(obj) and not isinstance(obj, type):
         return {f.name: J(getattr(obj, f.name)) for f in fields(obj)}
     if hasattr(obj, "__table__"):

@@ -133,3 +133,10 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - Settled/closed loans no longer offer WhatsApp reminders or "Log a contact".
 - Flash messages in plain words (Top-up / Rate change / which payment was reversed); funding refusal says how much is still unlinked.
 - Phone layout: no sideways scrolling on person, reports, funding pages; styled file pickers; calendar tabs on one line.
+
+## Phase 17 - React frontend (branch react-ui) - done
+- Whole UI rebuilt in React + TypeScript + Tailwind (frontend/), design "Ledgerly option 1"; Jinja pages removed.
+- Backend: views.py = one JSON payload per screen from the same services (numbers unchanged); CSRF via X-CSRF-Token header.
+- New: Payments page, Ctrl K search, "vs last month" trends; public borrower pages as React + /api/public JSON.
+- Tests: test_web.py ported to the API with the same expected numbers + new tests (288 pass); Vitest for formatting;
+  browser click-through 70/70 (desktop, phone, viewer, borrower link). Dockerfile builds the app in a Node stage.
