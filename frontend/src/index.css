@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Ledgerly palette (docs/design/ledgerly-option1): deep ocean teal, emerald, warm amber. */
+:root {
+  --c-bg: #f4f8f7; --c-card: #ffffff; --c-ink: #142b35; --c-muted: #71838b; --c-soft: #526a70;
+  --c-line: #e5ecec; --c-field: #f7faf9; --c-chip: #eaf1ef;
+  --c-teal: #087f72; --c-tealsoft: #dff4ee; --c-deep: #082f35;
+  --c-green: #10a384; --c-greensoft: #e1f5ee;
+  --c-amber: #e99b45; --c-ambersoft: #fff0dd;
+  --c-red: #df6464; --c-redsoft: #fff0ed; --c-redink: #b84e44;
+  --c-violet: #7664b9; --c-violetsoft: #eeeaff; --c-blue: #328d9a; --c-bluesoft: #e2f4f4;
+}
+.dark {
+  --c-bg: #0b1a1d; --c-card: #102529; --c-ink: #e3eeec; --c-muted: #8ea5a8; --c-soft: #a8bcbe;
+  --c-line: #1f3b40; --c-field: #0d1f22; --c-chip: #17323a;
+  --c-teal: #2bb3a0; --c-tealsoft: #123d3a; --c-deep: #061c20;
+  --c-green: #2fc19f; --c-greensoft: #113a32;
+  --c-amber: #f0ad60; --c-ambersoft: #3a2a17;
+  --c-red: #f07e7e; --c-redsoft: #3b1d1d; --c-redink: #f39b93;
+  --c-violet: #a597e6; --c-violetsoft: #272246; --c-blue: #5fbfcc; --c-bluesoft: #133438;
+}
+
+@theme inline {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: Manrope, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --color-bg: var(--c-bg); --color-card: var(--c-card); --color-ink: var(--c-ink); --color-muted: var(--c-muted);
+  --color-soft: var(--c-soft); --color-line: var(--c-line); --color-field: var(--c-field); --color-chip: var(--c-chip);
+  --color-teal: var(--c-teal); --color-tealsoft: var(--c-tealsoft); --color-deep: var(--c-deep);
+  --color-green: var(--c-green); --color-greensoft: var(--c-greensoft);
+  --color-amber: var(--c-amber); --color-ambersoft: var(--c-ambersoft);
+  --color-red: var(--c-red); --color-redsoft: var(--c-redsoft); --color-redink: var(--c-redink);
+  --color-violet: var(--c-violet); --color-violetsoft: var(--c-violetsoft);
+  --color-blue: var(--c-blue); --color-bluesoft: var(--c-bluesoft);
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-bg text-ink font-sans text-sm antialiased; }
+  h1, h2, h3 { @apply font-display; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  .num { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  .card { @apply bg-card border border-line rounded-[14px] shadow-[0_4px_14px_#183e3b0a] min-w-0; }
+  .btn { @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-line bg-card px-[15px] py-2.5 text-xs font-bold text-soft transition hover:brightness-[.98] disabled:opacity-60; }
+  .btn-primary { @apply border-teal bg-teal text-white shadow-[0_4px_10px_#087f7224]; }
+  .btn-danger { @apply border-redsoft bg-redsoft text-redink; }
+  .btn-soft { @apply border-tealsoft bg-tealsoft text-teal; }
+  .btn-sm { @apply px-2.5 py-1.5 text-[11px]; }
+  .input { @apply w-full min-h-[42px] rounded-lg border border-line bg-field px-3 py-2.5 text-sm text-ink outline-none transition focus:border-teal focus:ring-2 focus:ring-teal/15; }
+  .label { @apply mb-1.5 block text-xs font-bold; }
+  .hint { @apply mt-1.5 text-[11px] text-muted; }
+  .th { @apply whitespace-nowrap bg-field px-3.5 py-3 text-left text-[11px] font-bold tracking-wide text-muted; }
+  .td { @apply whitespace-nowrap border-b border-line px-3.5 py-3.5 text-xs; }
+  .link { @apply text-[11px] font-bold text-teal hover:underline; }
+  input[type=file].input { @apply cursor-pointer py-2 text-muted; }
+  input[type=file]::file-selector-button { @apply mr-3 cursor-pointer rounded-md border-0 bg-tealsoft px-3 py-2 text-xs font-bold text-teal; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+  .card { box-shadow: none; border-color: #ddd; }
+}

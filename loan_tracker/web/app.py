@@ -5,30 +5,27 @@ Run:  uvicorn loan_tracker.web.app:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import secrets
-import time
 from collections import defaultdict, deque
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Iterator
-from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
-from loan_tracker import auth, reports, services as svc
+from loan_tracker import reports, services as svc
 from loan_tracker.config import Settings, get_settings, today as clock_today
 from loan_tracker.db import models as m
 from loan_tracker.db.session import session_factory
 from loan_tracker.engine.calendar import _add_months as add_months
-from loan_tracker.web import formatting as fmt
 from loan_tracker.web.schemas import (CashAccountIn, CashBalanceIn, ContactIn, EntryIn, FundingIn, LoanIn,
                                       PartyIn, PlannedIn, ReverseIn, SimulateLoanIn, SimulateNewIn,
                                       BankLinkIn, BankRecordIn, describe)
@@ -43,6 +40,10 @@ class ReadOnly(Exception):
 
 
 class LoginRequired(Exception):
+    pass
+
+
+class CsrfFailed(Exception):
     pass
 
 
@@ -73,25 +74,19 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     vault = svc.DocVault.from_settings(settings)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site="lax",
                        https_only=settings.secure_cookies, max_age=12 * 3600)
-    @app.middleware("http")
-    async def api_posts_are_json(request: Request, call_next):
-        """CSRF guard for the JSON API: a cross-site HTML form cannot send
-        application/json, so every POST under /api/ must declare it, including
-        endpoints that take no body (send {})."""
-        if request.method == "POST" and request.url.path.startswith("/api/"):
-            ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return JSONResponse({"detail": "send the request as JSON (Content-Type: application/json)"},
-                                    status_code=415)
-        return await call_next(request)
+    async def api_csrf(request: Request) -> None:
+        """CSRF guard for the API: every request that changes something must send the
+        session's token in the X-CSRF-Token header (from GET /api/session). A cross-site
+        page cannot read the token or set the header, for JSON and file uploads alike."""
+        if request.method in ("GET", "HEAD", "OPTIONS") or not request.url.path.startswith("/api/"):
+            return
+        sent = request.headers.get("x-csrf-token", "")
+        if not sent or not secrets.compare_digest(sent, request.session.get("csrf", "")):
+            raise CsrfFailed()
+
+    app.router.dependencies.append(Depends(api_csrf))
 
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
-    templates = Jinja2Templates(directory=HERE / "templates")
-    templates.env.filters.update(inr=fmt.inr, dmy=fmt.dmy, dshort=fmt.dshort, pct=fmt.pct, rupees_input=fmt.rupees_input)
-    templates.env.filters.update(when=lambda dt: fmt.when(dt, settings.timezone))
-    templates.env.globals.update(chart_paths=fmt.chart_paths, donut_style=fmt.donut_style, timedelta=timedelta,
-                                 action_labels=fmt.ACTION_LABELS, kind_labels=fmt.KIND_LABELS,
-                                 outcome_labels=fmt.OUTCOME_LABELS, promise_labels=fmt.PROMISE_LABELS)
     insecure_secret = (len(settings.secret_key) < 32 or "change-me" in settings.secret_key
                        or settings.secret_key.startswith("dev-only"))
 
@@ -165,56 +160,6 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
             tok = request.session["csrf"] = secrets.token_urlsafe(24)
         return tok
 
-    async def check_csrf(request: Request) -> None:
-        """Every HTML form POST carries the session's token (defence in depth on
-        top of SameSite=Lax cookies). JSON /api calls are covered by FastAPI's
-        JSON content-type requirement, which a cross-site form cannot send."""
-        form = await request.form()
-        sent = form.get("csrf_token", "")
-        if not sent or not secrets.compare_digest(str(sent), request.session.get("csrf", "")):
-            raise svc.ServiceError("This form expired. Please try again.")
-
-    def render(request: Request, name: str, **ctx) -> HTMLResponse:
-        nav_overdue = 0
-        if request.session.get("user"):
-            with app.state.maker() as s2:
-                nav_overdue = s2.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
-        base = dict(request=request, book=book_of(request), today=app.state.today(),
-                    role=getattr(request.state, "role", None),
-                    flash=request.session.pop("flash", None), error=request.session.pop("error", None),
-                    user=request.session.get("user"), csrf=csrf_token(request),
-                    nav_overdue=nav_overdue, insecure_secret=insecure_secret)
-        if ctx.get("error") is None:           # a page's own error message wins; never drop either
-            ctx.pop("error", None)
-        elif base["error"]:
-            ctx["error"] = f"{base['error']} {ctx['error']}"
-        return templates.TemplateResponse(request, name, base | ctx)
-
-    def safe_path(url: str | None, default: str = "/") -> str:
-        """Only ever redirect within this site: keep the path (and query) of
-        the URL; anything not starting with a single '/' falls back to default."""
-        if not url:
-            return default
-        parts = urlsplit(url)
-        path = parts.path or "/"
-        if not path.startswith("/") or path.startswith("//") or "\\" in path:
-            return default
-        return path + (f"?{parts.query}" if parts.query else "")
-
-    def referer(request: Request, default: str = "/") -> str:
-        ref = request.headers.get("referer")
-        if ref:
-            if urlsplit(ref).netloc not in ("", request.url.netloc):
-                return default
-        return safe_path(ref, default)
-
-    def back(request: Request, url: str, *, flash: str | None = None, error: str | None = None):
-        if flash:
-            request.session["flash"] = flash
-        if error:
-            request.session["error"] = error
-        return RedirectResponse(safe_path(url), status_code=303)
-
     def parse_date(v: str | None, default: date) -> date:
         if not v:
             return default
@@ -226,33 +171,26 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     @app.exception_handler(ReadOnly)
     async def _read_only(request: Request, exc: ReadOnly):
         msg = "Read-only access: you can look, but only the owner can make changes or open documents."
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": msg}, status_code=403)
-        request.session["error"] = msg
-        return RedirectResponse(referer(request, "/") if request.method != "GET" else "/", status_code=303)
+        return JSONResponse({"detail": msg}, status_code=403)
+
+    @app.exception_handler(CsrfFailed)
+    async def _csrf_failed(request: Request, exc: CsrfFailed):
+        return JSONResponse({"detail": "This page expired. Reload and try again."}, status_code=403)
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, exc: LoginRequired):
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": "login required"}, status_code=401)
-        return RedirectResponse("/login", status_code=303)
+        return JSONResponse({"detail": "login required"}, status_code=401)
 
     @app.exception_handler(RequestValidationError)
     async def _bad_request(request: Request, exc: RequestValidationError):
         errors = exc.errors()
-        if not request.url.path.startswith("/api/"):   # HTML form: back to the page with a message
-            request.session["error"] = "Please check the form: " + describe(errors)
-            return RedirectResponse(referer(request), status_code=303)
         return JSONResponse({"detail": describe(errors),
                              "errors": [{"field": ".".join(str(x) for x in e.get("loc", ()) if x != "body"),
                                          "message": e.get("msg")} for e in errors]}, status_code=400)
 
     @app.exception_handler(svc.ServiceError)
     async def _service_error(request: Request, exc: svc.ServiceError):
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": str(exc)}, status_code=400)
-        request.session["error"] = str(exc)
-        return RedirectResponse(referer(request), status_code=303)
+        return JSONResponse({"detail": str(exc)}, status_code=400)
 
     # ------------------------------------------------------------- public
     @app.get("/healthz")
@@ -273,362 +211,6 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
     def service_worker():
         return Response((HERE / "static" / "sw.js").read_text(), media_type="application/javascript")
 
-    @app.get("/login", response_class=HTMLResponse)
-    def login_page(request: Request):
-        return render(request, "login.html")
-
-    @app.post("/login", dependencies=[Depends(check_csrf)])
-    def login(request: Request, username: str = Form(...), password: str = Form(...),
-              code: str = Form(""), s: Session = Depends(db)):
-        ip = request.client.host if request.client else "?"
-        now = time.time()
-        fails = recent_failures(app.state.failed_logins, ip, now)
-        if len(fails) >= 5:
-            log(request, s, "LOGIN_BLOCKED", actor=username.strip()[:100])
-            return back(request, "/login", error="Too many attempts. Wait 15 minutes.")
-        u = s.scalar(select(m.AppUser).where(m.AppUser.username == username.strip()))
-        ok = u is not None and u.disabled_at is None and auth.verify_password(password, u.password_hash)
-        if ok and u.totp_secret:
-            ok = auth.verify_totp(u.totp_secret, code)
-        if not ok:
-            fails.append(now)
-            log(request, s, "LOGIN_FAILED", actor=username.strip()[:100])
-            return back(request, "/login", error="Wrong username, password or code.")
-        fails.clear()
-        request.session.clear()  # new session on login (prevents session fixation)
-        request.session["user"] = u.username
-        request.session["epoch"] = u.session_epoch
-        log(request, s, "LOGIN_OK", "app_user", u.id, role=u.role)
-        return RedirectResponse("/", status_code=303)
-
-    @app.get("/logout")
-    def logout(request: Request, s: Session = Depends(db)):
-        if request.session.get("user"):
-            log(request, s, "LOGOUT")
-        request.session.clear()
-        return RedirectResponse("/login", status_code=303)
-
-    # ------------------------------------------------------------- pages
-    @app.get("/book/{name}")
-    def set_book(name: str, request: Request, _: str = Depends(user)):
-        resp = RedirectResponse(referer(request), status_code=303)
-        resp.set_cookie("book", name if name in BOOKS else "all", max_age=365 * 86400, samesite="lax")
-        return resp
-
-    @app.get("/", response_class=HTMLResponse)
-    def home(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        dash = reports.dashboard(s, today(), BOOKS[book_of(request)], cash_buffer_paise=settings.cash_buffer_paise,
-                                 concentration_flag_pct=settings.concentration_flag_pct)
-        last = s.scalar(select(m.JobRun).order_by(m.JobRun.started_at.desc()).limit(1))
-        return render(request, "home.html", d=dash, last_job=last)
-
-    @app.get("/parties", response_class=HTMLResponse)
-    def parties_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
-        rows = reports_parties(s, today(), BOOKS[book_of(request)], q)
-        return render(request, "parties.html", rows=rows, q=q)
-
-    @app.post("/parties", dependencies=[Depends(check_csrf)])
-    def parties_create(request: Request, name: str = Form(...), phone: str = Form(""),
-                       address: str = Form(""), notes: str = Form(""), _: str = Depends(user),
-                       s: Session = Depends(db)):
-        p = svc.create_party(s, name, phone=phone, address=address, notes=notes)
-        log(request, s, "PARTY_CREATED", "party", p.id, name=p.name)
-        return back(request, f"/parties/{p.id}", flash=f"Added {p.name}.")
-
-    @app.get("/parties/{party_id}", response_class=HTMLResponse)
-    def party_page(party_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        party = svc.get_party(s, party_id)
-        rows = svc.portfolio(s, today(), BOOKS[book_of(request)], party_id=party_id)
-        return render(request, "party.html", party=party, rows=rows, summary=party_summary(rows),
-                      docs=svc.documents(s, party_id=party_id) if request.state.role == "OWNER" else None,
-                      vault_problem=vault.problem)
-
-    @app.post("/parties/{party_id}", dependencies=[Depends(check_csrf)])
-    def party_update(party_id: int, request: Request, name: str = Form(...), phone: str = Form(""),
-                     address: str = Form(""), id_proof_ref: str = Form(""), guarantor: str = Form(""),
-                     notes: str = Form(""), risk_tag: str = Form(""), _: str = Depends(user),
-                     s: Session = Depends(db)):
-        svc.update_party(s, party_id, name=name, phone=phone, address=address, id_proof_ref=id_proof_ref,
-                         guarantor=guarantor, notes=notes, risk_tag=risk_tag)
-        log(request, s, "PARTY_UPDATED", "party", party_id, name=name)
-        return back(request, f"/parties/{party_id}", flash="Saved.")
-
-    @app.get("/loans", response_class=HTMLResponse)
-    def loans_page(request: Request, direction: str = "", status: str = "", q: str = "",
-                   _: str = Depends(user), s: Session = Depends(db)):
-        all_rows = svc.portfolio(s, today(), BOOKS[book_of(request)])
-        rows = [r for r in all_rows
-                if (not direction or r.loan.direction == direction)
-                and (not status or r.status == status)
-                and (not q or q.lower() in r.loan.party.name.lower() or q.strip().upper() in (f"LN-{r.loan.id}", str(r.loan.id)))]
-        return render(request, "loans.html", rows=rows, all_rows=all_rows, direction=direction,
-                      status=status, q=q)
-
-    @app.get("/loans/new", response_class=HTMLResponse)
-    def loan_new(request: Request, party_id: int | None = None, direction: str = "GIVEN",
-                 _: str = Depends(user), s: Session = Depends(db)):
-        parties = s.scalars(select(m.Party).order_by(m.Party.name)).all()
-        return render(request, "loan_new.html", parties=parties, party_id=party_id, direction=direction)
-
-    @app.post("/loans", dependencies=[Depends(check_csrf)])
-    def loan_create(request: Request, party_id: int = Form(...), direction: str = Form(...),
-                    book: str = Form(""), principal: str = Form(...), start_date: str = Form(""),
-                    rate: str = Form(...), rate_unit: str = Form("PER_MONTH"),
-                    interest_cycle: str = Form("MONTHLY"), due_day: str = Form(""),
-                    grace_days: int = Form(3), maturity_date: str = Form(""), purpose: str = Form(""),
-                    collateral: str = Form(""), payment_mode: str = Form("CASH"),
-                    _: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        loan = svc.create_loan(
-            s, party_id=party_id, direction=direction, book=book,
-            principal_paise=svc.rupees_to_paise(principal), start_date=parse_date(start_date, t),
-            rate=svc.parse_rate(rate), rate_unit=rate_unit, interest_cycle=interest_cycle,
-            due_day=int(due_day) if due_day else None, grace_days=grace_days,
-            maturity_date=parse_date(maturity_date, None) if maturity_date else None,
-            purpose=purpose, collateral=collateral, payment_mode=payment_mode, as_of=t)
-        log(request, s, "LOAN_CREATED", "loan", loan.id, direction=loan.direction, book=loan.book,
-            principal_paise=loan.principal_paise, rate=loan.rate)
-        return back(request, f"/loans/{loan.id}", flash="Loan created.")
-
-    @app.get("/loans/{loan_id}", response_class=HTMLResponse)
-    def loan_page(loan_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        loan = svc.get_loan(s, loan_id)
-        res = svc.compute_loan(loan, today())
-        reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
-        allocs: dict[int, list] = defaultdict(list)
-        for a in res.allocations:
-            allocs[a.entry_id].append(a)
-        links = [l for l in svc.funding_links(s) if loan_id in (l.taken_loan_id, l.given_loan_id)]
-        others = {l2.id: l2 for l2 in s.scalars(select(m.Loan).where(
-            m.Loan.id.in_([l.taken_loan_id for l in links] + [l.given_loan_id for l in links])))}
-        acts, proms, wa = [], [], None
-        if loan.direction == "GIVEN":
-            from loan_tracker.collections import reminder_text, wa_link
-            acts, promises = svc.loan_collections(s, loan_id)
-            proms = [(p, svc.promise_state(p, loan, today())) for p in promises]
-            late = [d for d in res.dues if d.status == "OVERDUE"]
-            pend_p, pending = next(((p, st) for p, st in sorted(proms, key=lambda x: x[0].promised_date)
-                                    if st.status == "PENDING"), (None, None))
-            wa = wa_link(loan.party.phone, reminder_text(
-                loan.party.name, loan.id,
-                overdue_paise=sum(d.outstanding_paise for d in late),
-                overdue_since=late[0].due.due_date if late else None,
-                next_paise=res.projected_due.interest_paise if res.projected_due else 0,
-                next_date=res.projected_due.due_date if res.projected_due else None,
-                promise_paise=pending.short_paise if pending else 0,
-                promise_date=pend_p.promised_date if pend_p else None))
-        rcpts = {r.ledger_entry_id: r for r in svc.receipts(s, loan_id=loan_id)}
-        missing = len(svc.payments_without_receipt(s, loan_id)) if loan.direction == "GIVEN" else 0
-        live_status = loan.status if loan.status in ("SETTLED", "WRITTEN_OFF") else res.loan_status
-        can_close = loan.direction == "GIVEN" and live_status in ("CLOSED", "SETTLED")
-        new_share = request.session.pop("new_share", None)
-        if new_share and new_share.get("loan_id") != loan_id:
-            new_share = None
-        share_wa = None
-        if new_share:
-            from loan_tracker.collections import wa_link
-            share_wa = wa_link(loan.party.phone, f"Hello {loan.party.name.split()[0]}, here is your loan statement "
-                                                 f"(LN-{loan.id}): {new_share['url']} . The link is private and works "
-                                                 f"for {new_share['days']} days.")
-        return render(request, "loan.html", vault_problem=vault.problem,
-                      docs=svc.documents(s, loan_id=loan_id) if request.state.role == "OWNER" else None,
-                      shares=svc.share_links(s, loan_id) if loan.direction == "GIVEN" else [],
-                      new_share=new_share, share_wa=share_wa, public_url=settings.public_url,
-                      now_utc=datetime.now(timezone.utc),
-                      loan=loan, r=res, reversed_ids=reversed_ids, allocs=allocs,
-                      links=links, others=others, acts=acts, proms=proms, wa=wa, rcpts=rcpts,
-                      missing_receipts=missing, can_close=can_close)
-
-    @app.post("/loans/{loan_id}/contacts", dependencies=[Depends(check_csrf)])
-    def contact_create(loan_id: int, request: Request, kind: str = Form("CALL"), outcome: str = Form("REACHED"),
-                       contact_date: str = Form(""), note: str = Form(""), next_follow_up: str = Form(""),
-                       promise_amount: str = Form(""), promise_date: str = Form(""),
-                       username: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        act, promise = svc.log_contact(
-            s, loan_id, actor=username, as_of=t, contact_date=parse_date(contact_date, t), kind=kind,
-            outcome=outcome, note=note, next_follow_up=parse_date(next_follow_up, None) if next_follow_up else None,
-            promise_amount_paise=svc.rupees_to_paise(promise_amount) if promise_amount else None,
-            promise_date=parse_date(promise_date, None) if promise_date else None)
-        log(request, s, "CONTACT_LOGGED", "collection_activity", act.id, loan_id=loan_id, type=kind,
-            outcome=outcome, note=act.note)
-        if promise:
-            log(request, s, "PROMISE_MADE", "payment_promise", promise.id, loan_id=loan_id,
-                amount_paise=promise.amount_paise, promised_date=promise.promised_date)
-        msg = "Contact saved." + (f" Promise of {fmt.inr(promise.amount_paise)} by {fmt.dmy(promise.promised_date)} "
-                                  "is tracked against real payments." if promise else "")
-        return back(request, referer(request, f"/loans/{loan_id}"), flash=msg)
-
-    @app.post("/promises/{promise_id}/cancel", dependencies=[Depends(check_csrf)])
-    def promise_cancel(promise_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
-                       s: Session = Depends(db)):
-        p = svc.cancel_promise(s, promise_id, note)
-        log(request, s, "PROMISE_CANCELLED", "payment_promise", p.id, loan_id=p.loan_id,
-            amount_paise=p.amount_paise, note=p.cancel_note)
-        return back(request, referer(request, f"/loans/{p.loan_id}"), flash="Promise cancelled.")
-
-    @app.get("/collections", response_class=HTMLResponse)
-    def collections_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        ov = reports.collections_overview(s, today(), BOOKS[book_of(request)])
-        return render(request, "collections.html", ov=ov)
-
-    @app.post("/loans/{loan_id}/entries", dependencies=[Depends(check_csrf)])
-    def loan_entry(loan_id: int, request: Request, type: str = Form(...), entry_date: str = Form(""),
-                   amount: str = Form(""), new_rate: str = Form(""), payment_mode: str = Form("CASH"),
-                   reference: str = Form(""), note: str = Form(""), _: str = Depends(user),
-                   s: Session = Depends(db)):
-        t = today()
-        e, res = svc.post_entry(
-            s, loan_id, type=type, entry_date=parse_date(entry_date, t), as_of=t,
-            amount_paise=svc.rupees_to_paise(amount) if amount else None,
-            new_rate=new_rate or None, payment_mode=payment_mode, reference=reference, note=note)
-        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
-            amount_paise=e.amount_paise, entry_date=e.entry_date)
-        msg = f"{ENTRY_WORDS.get(e.type, e.type.replace('_', ' ').capitalize())}"
-        msg += f" of {fmt.inr(e.amount_paise)}" if e.amount_paise else ""
-        msg += f" to {e.new_rate.normalize():f}% a month" if e.type == "RATE_CHANGE" and e.new_rate is not None else ""
-        msg += f" on {e.entry_date:%d %b %Y} recorded."
-        if type == "PAYMENT":
-            split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
-                              for a in res.allocations if a.entry_id == e.id)
-            msg = f"Payment of {fmt.inr(e.amount_paise)} recorded: {split or 'held as credit'}."
-            rc = receipt_of(s, e.id)
-            if rc:
-                msg += f" Receipt {rc.number} issued."
-        return back(request, referer(request, f"/loans/{loan_id}"), flash=msg)
-
-    @app.post("/entries/{entry_id}/reverse", dependencies=[Depends(check_csrf)])
-    def entry_reverse(entry_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
-                      s: Session = Depends(db)):
-        t = today()
-        original = s.get(m.LedgerEntry, entry_id)
-        if original is None:
-            raise svc.ServiceError(f"entry {entry_id} not found")
-        loan_id = original.loan_id
-        svc.reverse_entry(s, entry_id, entry_date=t, as_of=t, note=note)
-        log(request, s, "ENTRY_REVERSED", "ledger_entry", entry_id, loan_id=loan_id, type=original.type,
-            amount_paise=original.amount_paise, note=note or None)
-        what = ENTRY_WORDS.get(original.type, original.type.replace("_", " ").capitalize())
-        what += f" of {fmt.inr(original.amount_paise)}" if original.amount_paise else ""
-        return back(request, f"/loans/{loan_id}",
-                    flash=f"{what} on {original.entry_date:%d %b %Y} reversed (entry #{entry_id}).")
-
-    @app.post("/loans/{loan_id}/status", dependencies=[Depends(check_csrf)])
-    def loan_status(loan_id: int, request: Request, status: str = Form(""), _: str = Depends(user),
-                    s: Session = Depends(db)):
-        before = svc.get_loan(s, loan_id).status
-        svc.set_owner_status(s, loan_id, status or None, today())
-        log(request, s, "STATUS_CHANGED", "loan", loan_id, before=before, after=status or "ACTIVE")
-        return back(request, f"/loans/{loan_id}", flash="Status updated.")
-
-    @app.get("/quick", response_class=HTMLResponse)
-    def quick_page(request: Request, loan_id: int | None = None, _: str = Depends(user),
-                   s: Session = Depends(db)):
-        rows = [r for r in svc.portfolio(s, today(), BOOKS[book_of(request)])
-                if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
-        return render(request, "quick.html", rows=rows, selected=loan_id)
-
-    @app.post("/quick", dependencies=[Depends(check_csrf)])
-    def quick_save(request: Request, loan_id: int = Form(...), amount: str = Form(...),
-                   entry_date: str = Form(""), payment_mode: str = Form("CASH"), reference: str = Form(""),
-                   _: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        e, res = svc.post_entry(s, loan_id, type="PAYMENT", entry_date=parse_date(entry_date, t), as_of=t,
-                                amount_paise=svc.rupees_to_paise(amount), payment_mode=payment_mode,
-                                reference=reference)
-        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
-            amount_paise=e.amount_paise, entry_date=e.entry_date, via="quick")
-        split = ", ".join(f"{a.bucket.lower()} {fmt.inr(a.amount_paise)}"
-                          for a in res.allocations if a.entry_id == e.id)
-        rc = receipt_of(s, e.id)
-        return back(request, "/quick", flash=f"Saved {fmt.inr(e.amount_paise)} on loan #{loan_id}: "
-                                              f"{split or 'held as credit'}."
-                                              + (f" Receipt {rc.number} issued." if rc else ""))
-
-    @app.get("/funding", response_class=HTMLResponse)
-    def funding_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        rows = svc.portfolio(s, today())
-        by_id = {r.loan.id: r for r in rows}
-        links = svc.funding_links(s)
-        terms = {r.loan.id: svc.to_terms(r.loan) for r in rows}
-        from loan_tracker import engine as eng
-        rep = eng.spread([eng.FundingLink(l.taken_loan_id, l.given_loan_id, l.amount_paise, l.link_date)
-                          for l in links], terms,
-                         outstanding={r.loan.id: r.result.balances.principal_outstanding_paise for r in rows})
-        return render(request, "funding.html", links=list(zip(links, rep.links)), by_id=by_id,
-                      idle=rep.idle_cost_paise_per_cycle,
-                      taken=[r for r in rows if r.loan.direction == "TAKEN"],
-                      given=[r for r in rows if r.loan.direction == "GIVEN"])
-
-    @app.post("/funding", dependencies=[Depends(check_csrf)])
-    def funding_create(request: Request, taken_loan_id: int = Form(...), given_loan_id: int = Form(...),
-                       amount: str = Form(...), link_date: str = Form(""),
-                       confirm_cross_book: str = Form(""), _: str = Depends(user), s: Session = Depends(db)):
-        link = svc.link_funding(s, taken_loan_id=taken_loan_id, given_loan_id=given_loan_id,
-                                amount_paise=svc.rupees_to_paise(amount), link_date=parse_date(link_date, today()),
-                                confirm_cross_book=bool(confirm_cross_book))
-        log(request, s, "FUNDING_LINKED", "funding_link", link.id, taken_loan_id=taken_loan_id,
-            given_loan_id=given_loan_id, amount_paise=link.amount_paise)
-        return back(request, "/funding", flash="Funding link saved.")
-
-    @app.get("/activity", response_class=HTMLResponse)
-    def activity_page(request: Request, loan_id: int | None = None, _: str = Depends(user),
-                      s: Session = Depends(db)):
-        rows = svc.audit_log(s, limit=300, loan_id=loan_id)
-        return render(request, "activity.html", rows=rows, loan_id=loan_id)
-
-    @app.get("/calendar", response_class=HTMLResponse)
-    def calendar_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
-        days = days if days in (30, 60, 90) else 30
-        t = today()
-        f = reports.cash_forecast(s, t, days, BOOKS[book_of(request)], settings.cash_buffer_paise)
-        cal = f.calendar
-        tin = sum(i.amount_paise for d in cal for i in d.money_in)
-        tout = sum(i.amount_paise for d in cal for i in d.money_out)
-        totals = {"in": tin, "out": tout, "net": tin - tout, "low": f.expected.low_paise,
-                  "low_day": f.expected.short_date}
-        weeks = reports.calendar_weeks(cal, t, t + timedelta(days=days))
-        return render(request, "calendar.html", cal=cal, days=days, totals=totals, weeks=weeks, f=f)
-
-    @app.get("/simulate", response_class=HTMLResponse)
-    def simulate_page(request: Request, mode: str = "loan", loan_id: str = "", kind: str = "EXTRA_PAYMENT",
-                      on: str = "", amount: str = "", rate: str = "", months: str = "1", horizon: int = 6,
-                      direction: str = "GIVEN", loan_book: str = "BUSINESS", start: str = "", due_day: str = "",
-                      maturity: str = "", days: int = 60, run: str = "", _: str = Depends(user),
-                      s: Session = Depends(db)):
-        """GET only: nothing is saved, so results can be bookmarked and no CSRF token is needed."""
-        from loan_tracker.simulator import KINDS, Scenario
-        t = today()
-        horizon = horizon if horizon in (3, 6, 12, 24) else 6
-        days = days if days in (30, 60, 90, 180) else 60
-        loans = [r for r in svc.portfolio(s, t) if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
-        form = {"mode": mode, "loan_id": loan_id, "kind": kind if kind in KINDS else "EXTRA_PAYMENT",
-                "on": on or t.isoformat(), "amount": amount, "rate": rate, "months": months, "horizon": horizon,
-                "direction": direction, "loan_book": loan_book, "start": start or t.isoformat(), "due_day": due_day,
-                "maturity": maturity, "days": days}
-        result = new = error = None
-        if run:
-            try:
-                if mode == "new":
-                    new = reports.simulate_new_loan(
-                        s, t, days, direction=direction if direction in ("GIVEN", "TAKEN") else "GIVEN",
-                        book=loan_book if loan_book in ("BUSINESS", "PERSONAL") else "BUSINESS",
-                        principal_paise=svc.rupees_to_paise(amount or "0"), rate=svc.parse_rate(rate or "0"),
-                        start_date=parse_date(start, t), due_day=int(due_day) if due_day.isdigit() else
-                        parse_date(start, t).day, maturity_date=parse_date(maturity, None) if maturity else None,
-                        buffer_paise=settings.cash_buffer_paise)
-                else:
-                    if not loan_id.isdigit():
-                        raise svc.ServiceError("choose a loan")
-                    sc = Scenario(form["kind"], parse_date(on, t),
-                                  amount_paise=svc.rupees_to_paise(amount) if amount else 0,
-                                  new_rate=svc.parse_rate(rate) if rate else None,
-                                  months=int(months) if months.isdigit() else 0)
-                    result = reports.simulate_loan(s, int(loan_id), t, add_months(t, horizon), sc)
-            except svc.ServiceError as exc:
-                error = str(exc)
-        return render(request, "simulate.html", form=form, loans=loans, result=result, new=new, sim_error=error)
-
     # ---- borrower statement links (Phase 15) -------------------------------------------
     PUBLIC_HEADERS = {"Cache-Control": "no-store, private", "X-Robots-Tag": "noindex, nofollow",
                       "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
@@ -636,92 +218,7 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                       "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self' data:; "
                                                  "form-action 'none'; frame-ancestors 'none'; base-uri 'none'"}
 
-    def public_page(request: Request, name: str, status: int = 200, **ctx):
-        """No session, no CSRF token, no sidebar: nothing of the owner's app leaks into it."""
-        ctx.setdefault("issuer", {"name": settings.receipt_name, "details": settings.receipt_details})
-        ctx.update(request=request, today=app.state.today())
-        return templates.TemplateResponse(request, name, ctx, status_code=status, headers=PUBLIC_HEADERS)
-
-    def open_link(request: Request, token: str, s: Session):
-        """The live link for token, or a 'not available' response. Failures are rate limited per IP."""
-        ip = request.client.host if request.client else "?"
-        now_ts = time.time()
-        fails = recent_failures(app.state.failed_shares, ip, now_ts)
-        if len(fails) >= 30:
-            return None, public_page(request, "public_unavailable.html", 429,
-                                     message="Too many attempts. Please try again later.")
-        try:
-            return svc.resolve_share_link(s, token, datetime.now(timezone.utc)), None
-        except svc.LinkUnavailable as exc:
-            fails.append(now_ts)
-            return None, public_page(request, "public_unavailable.html", 410 if "not valid" not in str(exc)
-                                     else 404, message=str(exc))
-
-    @app.get("/s/{token}", response_class=HTMLResponse)
-    def shared_statement(token: str, request: Request, s: Session = Depends(db)):
-        link, refusal = open_link(request, token, s)
-        if refusal:
-            return refusal
-        svc.record_share_view(s, link, datetime.now(timezone.utc))
-        log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id)
-        st = svc.borrower_statement(s, link.loan_id, app.state.today())
-        return public_page(request, "public_statement.html", st=st, base=f"/s/{token}", expires=link.expires_at,
-                           issuer=issuer_for(s.get(m.Loan, link.loan_id).book))
-
-    @app.get("/s/{token}/receipts/{receipt_id}", response_class=HTMLResponse)
-    def shared_receipt(token: str, receipt_id: int, request: Request, s: Session = Depends(db)):
-        from loan_tracker.receipts import amount_in_words
-        link, refusal = open_link(request, token, s)
-        if refusal:
-            return refusal
-        r = s.get(m.Receipt, receipt_id)
-        if r is None or r.loan_id != link.loan_id:            # only receipts of this link's loan
-            return public_page(request, "public_unavailable.html", 404, message="This receipt is not available.")
-        log(request, s, "SHARE_VIEWED", "share_link", link.id, actor="borrower", loan_id=link.loan_id, note=r.number)
-        return public_page(request, "public_receipt.html", r=r, loan=r.loan, words=amount_in_words(r.amount_paise),
-                           issuer=issuer_for(r.loan.book), base=f"/s/{token}", expires=link.expires_at)
-
-    @app.post("/loans/{loan_id}/share", dependencies=[Depends(check_csrf)])
-    def share_create(loan_id: int, request: Request, days: int = Form(30), username: str = Depends(user),
-                     s: Session = Depends(db)):
-        link, token = svc.create_share_link(s, loan_id, days=days, actor=username, now=datetime.now(timezone.utc))
-        log(request, s, "SHARE_CREATED", "share_link", link.id, loan_id=loan_id, note=f"{days} days")
-        base = settings.public_url or str(request.base_url).rstrip("/")
-        request.session["new_share"] = {"loan_id": loan_id, "url": f"{base}/s/{token}", "days": days}
-        return RedirectResponse(f"/loans/{loan_id}#share", status_code=303)
-
-    @app.post("/share/{link_id}/revoke", dependencies=[Depends(check_csrf)])
-    def share_revoke(link_id: int, request: Request, username: str = Depends(user), s: Session = Depends(db)):
-        link = svc.revoke_share_link(s, link_id, actor=username, now=datetime.now(timezone.utc))
-        log(request, s, "SHARE_REVOKED", "share_link", link.id, loan_id=link.loan_id)
-        return back(request, f"/loans/{link.loan_id}#share", flash="Link switched off. It no longer opens.")
-
-    @app.get("/documents", response_class=HTMLResponse)
-    def documents_page(request: Request, q: str = "", _: str = Depends(owner_only), s: Session = Depends(db)):
-        docs = svc.documents(s)
-        if q.strip():
-            needle = q.strip().lower()
-            docs = [d for d in docs if needle in d.title.lower() or (d.party and needle in d.party.name.lower())]
-        people = svc.list_parties(s)
-        loans = [(r.loan.id, r.loan.party_id, f"LN-{r.loan.id} · {'lent' if r.loan.direction == 'GIVEN' else 'borrowed'} "
-                  f"{fmt.inr(r.loan.principal_paise, decimals=False)}") for r in svc.portfolio(s, today())]
-        return render(request, "documents.html", docs=docs, q=q, vault_problem=vault.problem, people=people,
-                      doc_loans=loans)
-
-    @app.post("/documents/upload", dependencies=[Depends(check_csrf)])
-    async def document_upload(request: Request, file: UploadFile = File(...), kind: str = Form("OTHER"),
-                              title: str = Form(""), party_id: str = Form(""), loan_id: str = Form(""),
-                              username: str = Depends(user), s: Session = Depends(db)):
-        from loan_tracker.docvault import MAX_DOC_BYTES
-        data = await file.read(MAX_DOC_BYTES + 1)
-        d = svc.store_document(s, vault, data=data, file_name=file.filename or "", kind=kind, title=title,
-                               actor=username, party_id=int(party_id) if party_id.isdigit() else None,
-                               loan_id=int(loan_id) if loan_id.isdigit() else None)
-        log(request, s, "DOC_UPLOADED", "document", d.id, name=d.title, type=d.kind, loan_id=d.loan_id,
-            note=f"{d.size_bytes // 1024 or 1} KB")
-        return back(request, referer(request, "/documents"), flash=f"“{d.title}” stored, encrypted.")
-
-    @app.get("/documents/{doc_id}/file")
+    @app.get("/api/documents/{doc_id}/file")
     def document_file(doc_id: int, request: Request, download: int = 0, _: str = Depends(owner_only),
                       s: Session = Depends(db)):
         from urllib.parse import quote
@@ -735,212 +232,6 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
                    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
                    + ("; sandbox" if d.content_type.startswith("image/") else "; object-src 'self'")}
         return Response(content=data, media_type=d.content_type, headers=headers)
-
-    @app.post("/documents/{doc_id}/delete", dependencies=[Depends(check_csrf)])
-    def document_delete(doc_id: int, request: Request, username: str = Depends(user), s: Session = Depends(db)):
-        d = svc.delete_document(s, vault, doc_id, username)
-        log(request, s, "DOC_DELETED", "document", d.id, name=d.title, loan_id=d.loan_id)
-        return back(request, referer(request, "/documents"), flash=f"“{d.title}” deleted; the file is erased.")
-
-    @app.get("/bank", response_class=HTMLResponse)
-    def bank_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        accounts = [a for a, _ in svc.latest_balances(s) if a.kind in ("BANK", "WALLET")]
-        imports = svc.bank_imports(s)
-        open_counts = {i.id: sum(1 for t in svc.bank_txns(s, i.id) if t.status == "NEW") for i in imports}
-        return render(request, "bank.html", accounts=accounts, imports=imports, open_counts=open_counts)
-
-    @app.post("/bank/upload", dependencies=[Depends(check_csrf)])
-    async def bank_upload(request: Request, account_id: int = Form(...), file: UploadFile = File(...),
-                          update_balance: str = Form(""), username: str = Depends(user),
-                          s: Session = Depends(db)):
-        from loan_tracker.bankimport import MAX_BYTES
-        data = await file.read(MAX_BYTES + 1)
-        imp, bal = svc.import_statement(s, account_id, data, file_name=file.filename or "statement.csv",
-                                        actor=username, as_of=today(), update_balance=update_balance == "1")
-        log(request, s, "BANK_IMPORTED", "bank_import", imp.id, name=imp.file_name, count=imp.new_count,
-            note=f"{imp.row_count} lines, {imp.row_count - imp.new_count} already imported")
-        msg = f"{imp.new_count} new transaction(s) imported"
-        if imp.row_count != imp.new_count:
-            msg += f"; {imp.row_count - imp.new_count} already imported earlier were skipped"
-        if bal:
-            msg += f". Balance set to {fmt.inr(bal.balance_paise)} as on {fmt.dmy(bal.as_of)}"
-        elif update_balance == "1":
-            newest = next((b for a, b in svc.latest_balances(s, include_inactive=True)
-                           if a.id == account_id and b is not None), None)
-            if newest is not None and newest.as_of > imp.period_end:
-                msg += f". Balance not changed: you have a newer one ({fmt.dmy(newest.as_of)})"
-        return back(request, f"/bank/imports/{imp.id}", flash=msg + ".")
-
-    @app.get("/bank/imports/{import_id}", response_class=HTMLResponse)
-    def bank_import_page(import_id: int, request: Request, show: str = "open", _: str = Depends(user),
-                         s: Session = Depends(db)):
-        imp = s.get(m.BankImport, import_id)
-        if imp is None:
-            raise svc.ServiceError(f"import {import_id} not found")
-        t = today()
-        txns = svc.bank_txns(s, import_id)
-        counts = {k: sum(1 for x in txns if x.status == k) for k in ("NEW", "LINKED", "RECORDED", "IGNORED")}
-        shown = [x for x in txns if x.status == "NEW"] if show == "open" else txns
-        sugg = svc.txn_suggestions(s, t, shown)
-        exact = sum(1 for v in sugg.values() if sum(1 for x in v if x.kind == "EXISTING" and x.strong) == 1)
-        loans = [r for r in svc.portfolio(s, t) if r.status not in ("CLOSED", "SETTLED", "WRITTEN_OFF")]
-        reversed_ids = set(s.scalars(select(m.LedgerEntry.reverses_id).where(m.LedgerEntry.reverses_id.is_not(None))))
-        ids = [x.ledger_entry_id for x in shown if x.ledger_entry_id]
-        entry_loans = dict(s.execute(select(m.LedgerEntry.id, m.LedgerEntry.loan_id)
-                                     .where(m.LedgerEntry.id.in_(ids))).all()) if ids else {}
-        names = {r.loan.id: r.loan.party.name for r in loans}
-        return render(request, "bank_import.html", imp=imp, txns=shown, counts=counts, show=show, sugg=sugg,
-                      exact=exact, loans=loans, reversed_ids=reversed_ids, entry_loans=entry_loans, names=names)
-
-    @app.post("/bank/imports/{import_id}/link-exact", dependencies=[Depends(check_csrf)])
-    def bank_link_exact(import_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        done = svc.link_exact_matches(s, import_id, today())
-        for t in done:
-            log(request, s, "BANK_LINKED", "bank_txn", t.id, entry=t.ledger_entry_id, amount_paise=abs(t.amount_paise))
-        return back(request, f"/bank/imports/{import_id}", flash=f"{len(done)} bank line(s) linked to entries "
-                                                                 "already in your ledger.")
-
-    def _txn_back(request: Request, t, msg: str):
-        return back(request, referer(request, f"/bank/imports/{t.import_id}"), flash=msg)
-
-    @app.post("/bank/txns/{txn_id}/link", dependencies=[Depends(check_csrf)])
-    def bank_txn_link(txn_id: int, request: Request, entry_id: int = Form(...), _: str = Depends(user),
-                      s: Session = Depends(db)):
-        t = svc.link_bank_txn(s, txn_id, entry_id)
-        log(request, s, "BANK_LINKED", "bank_txn", t.id, entry=entry_id, amount_paise=abs(t.amount_paise))
-        return _txn_back(request, t, f"Linked to entry #{entry_id}.")
-
-    @app.post("/bank/txns/{txn_id}/record", dependencies=[Depends(check_csrf)])
-    def bank_txn_record(txn_id: int, request: Request, loan_id: int = Form(...), _: str = Depends(user),
-                        s: Session = Depends(db)):
-        t, e = svc.record_bank_txn(s, txn_id, loan_id, today())
-        log(request, s, "ENTRY_POSTED", "ledger_entry", e.id, loan_id=loan_id, type=e.type,
-            amount_paise=e.amount_paise, entry_date=e.entry_date, via="bank import")
-        rc = receipt_of(s, e.id)
-        return _txn_back(request, t, f"Payment of {fmt.inr(e.amount_paise)} recorded on LN-{loan_id}"
-                                     + (f"; receipt {rc.number} issued." if rc else "."))
-
-    @app.post("/bank/txns/{txn_id}/ignore", dependencies=[Depends(check_csrf)])
-    def bank_txn_ignore(txn_id: int, request: Request, note: str = Form(""), _: str = Depends(user),
-                        s: Session = Depends(db)):
-        t = svc.ignore_bank_txn(s, txn_id, note)
-        log(request, s, "BANK_IGNORED", "bank_txn", t.id, amount_paise=abs(t.amount_paise), note=t.note)
-        return _txn_back(request, t, "Marked as not loan money.")
-
-    @app.post("/bank/txns/{txn_id}/undo", dependencies=[Depends(check_csrf)])
-    def bank_txn_undo(txn_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        t = svc.undo_bank_txn(s, txn_id)
-        log(request, s, "BANK_UNDONE", "bank_txn", t.id, amount_paise=abs(t.amount_paise))
-        return _txn_back(request, t, "Back to open.")
-
-    @app.get("/cash", response_class=HTMLResponse)
-    def cash_page(request: Request, days: int = 30, _: str = Depends(user), s: Session = Depends(db)):
-        days = days if days in (30, 60, 90) else 30
-        t = today()
-        book = BOOKS[book_of(request)]
-        f = reports.cash_forecast(s, t, days, book, settings.cash_buffer_paise)
-        plans = svc.planned_items(s, t, t + timedelta(days=365), book)
-        closed = [a for a, _ in svc.latest_balances(s, book, include_inactive=True) if not a.is_active]
-        return render(request, "cash.html", f=f, days=days, plans=plans, closed=closed,
-                      warnings=reports.cash_warnings(f),
-                      chart=fmt.balance_chart(f.opening_paise, t, t + timedelta(days=days), {
-                          "expected": [(d.day, d.running_paise) for d in f.expected.days],
-                          "cautious": [(d.day, d.running_paise) for d in f.cautious.days]},
-                          settings.cash_buffer_paise))
-
-    @app.post("/cash/accounts", dependencies=[Depends(check_csrf)])
-    def cash_account_create(request: Request, name: str = Form(...), kind: str = Form("BANK"),
-                            book: str = Form("BUSINESS"), balance: str = Form("0"), _: str = Depends(user),
-                            s: Session = Depends(db)):
-        acc = svc.create_cash_account(s, name=name, kind=kind, book=book,
-                                      balance_paise=svc.rupees_to_paise(balance or "0"), as_of=today())
-        log(request, s, "CASH_ACCOUNT_ADDED", "cash_account", acc.id, name=acc.name, book=acc.book,
-            amount_paise=svc.rupees_to_paise(balance or "0"))
-        return back(request, "/cash", flash=f"Account {acc.name} added.")
-
-    @app.post("/cash/accounts/{account_id}/balance", dependencies=[Depends(check_csrf)])
-    def cash_balance_set(account_id: int, request: Request, balance: str = Form(...), on: str = Form(""),
-                         note: str = Form(""), _: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        b = svc.set_cash_balance(s, account_id, balance_paise=svc.rupees_to_paise(balance),
-                                 on=parse_date(on, t), as_of=t, note=note)
-        log(request, s, "CASH_BALANCE_SET", "cash_account", account_id, amount_paise=b.balance_paise,
-            on=b.as_of, note=b.note)
-        return back(request, "/cash", flash=f"Balance {fmt.inr(b.balance_paise)} saved for {fmt.dmy(b.as_of)}.")
-
-    @app.post("/cash/accounts/{account_id}/active", dependencies=[Depends(check_csrf)])
-    def cash_account_active(account_id: int, request: Request, active: str = Form("0"),
-                            _: str = Depends(user), s: Session = Depends(db)):
-        acc = svc.set_cash_account_active(s, account_id, active == "1")
-        log(request, s, "CASH_ACCOUNT_REOPENED" if acc.is_active else "CASH_ACCOUNT_CLOSED", "cash_account",
-            acc.id, name=acc.name)
-        return back(request, "/cash", flash=f"{acc.name} {'reopened' if acc.is_active else 'closed'}.")
-
-    @app.post("/cash/planned", dependencies=[Depends(check_csrf)])
-    def planned_create(request: Request, description: str = Form(...), amount: str = Form(...),
-                       item_date: str = Form(...), direction: str = Form("OUT"), book: str = Form("BUSINESS"),
-                       _: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        it = svc.add_planned_item(s, book=book, item_date=parse_date(item_date, t), direction=direction,
-                                  amount_paise=svc.rupees_to_paise(amount), description=description, as_of=t)
-        log(request, s, "PLAN_ADDED", "planned_cash_item", it.id, note=it.description,
-            amount_paise=it.amount_paise, on=it.item_date, type=it.direction)
-        return back(request, referer(request, "/cash"), flash="Planned item added to the forecast.")
-
-    @app.post("/cash/planned/{item_id}/cancel", dependencies=[Depends(check_csrf)])
-    def planned_cancel(item_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        it = svc.cancel_planned_item(s, item_id)
-        log(request, s, "PLAN_CANCELLED", "planned_cash_item", it.id, note=it.description,
-            amount_paise=it.amount_paise)
-        return back(request, referer(request, "/cash"), flash="Planned item cancelled.")
-
-    @app.get("/reports", response_class=HTMLResponse)
-    def reports_page(request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        t = today()
-        return render(request, "reports.html", fy=reports.fy_interest_report(s, t),
-                      overdue=reports.overdue_report(s, t, BOOKS[book_of(request)]),
-                      cross=reports.cross_book_report(s, t))
-
-    @app.get("/reports/statement/{loan_id}", response_class=HTMLResponse)
-    def statement(loan_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        loan = svc.get_loan(s, loan_id)
-        res = svc.compute_loan(loan, today())
-        reversed_ids = {e.reverses_id for e in loan.entries if e.reverses_id}
-        return render(request, "statement.html", loan=loan, r=res, reversed_ids=reversed_ids)
-
-    @app.get("/receipts", response_class=HTMLResponse)
-    def receipts_page(request: Request, q: str = "", _: str = Depends(user), s: Session = Depends(db)):
-        return render(request, "receipts.html", receipts=svc.receipts(s, q=q), q=q,
-                      missing=len(svc.payments_without_receipt(s)))
-
-    @app.post("/receipts/backfill", dependencies=[Depends(check_csrf)])
-    def receipts_backfill(request: Request, loan_id: str = Form(""), _: str = Depends(user),
-                          s: Session = Depends(db)):
-        made = svc.issue_missing_receipts(s, today(), int(loan_id) if loan_id.isdigit() else None)
-        if made:
-            log(request, s, "RECEIPTS_ISSUED", "receipt", made[0].id, count=len(made),
-                first=made[0].number, last=made[-1].number)
-        return back(request, referer(request, "/receipts"), flash=f"{len(made)} receipt(s) issued for older payments."
-                    if made else "Every payment already has a receipt.")
-
-    @app.get("/receipts/{receipt_id}", response_class=HTMLResponse)
-    def receipt_page(receipt_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        from loan_tracker.collections import wa_link
-        from loan_tracker.receipts import amount_in_words
-        r = svc.get_receipt(s, receipt_id)
-        text = (f"Receipt {r.number}: received {fmt.inr(r.amount_paise)} on {fmt.dmy(r.payment_date)} "
-                f"for loan LN-{r.loan_id}"
-                + (f" (interest {fmt.inr(r.interest_paise)}" + (f", principal {fmt.inr(r.principal_paise)}"
-                                                               if r.principal_paise else "") + ")"
-                   if r.interest_paise or r.principal_paise else "")
-                + f". Principal outstanding {fmt.inr(r.principal_left_paise)}. Thank you.")
-        return render(request, "receipt.html", r=r, words=amount_in_words(r.amount_paise),
-                      issuer=issuer_for(r.loan.book), wa=None if r.cancelled_at else wa_link(r.loan.party.phone, text))
-
-    @app.get("/loans/{loan_id}/closure", response_class=HTMLResponse)
-    def closure_page(loan_id: int, request: Request, _: str = Depends(user), s: Session = Depends(db)):
-        c = reports.closure_summary(s, loan_id, today())
-        return render(request, "closure.html", c=c, loan=c.loan, issuer=issuer_for(c.loan.book))
 
     @app.get("/export.csv")
     def export(request: Request, _: str = Depends(user), s: Session = Depends(db)):
@@ -1275,7 +566,43 @@ def create_app(settings: Settings | None = None, *, maker: sessionmaker | None =
         from loan_tracker.jobs.daily import build_digest
         return jsonable(build_digest(s, today(), settings))
 
+    from loan_tracker.web import views
+    views.register(app, SimpleNamespace(
+        db=db, user=user, owner_only=owner_only, log=log, today=today, book_of=book_of, parse_date=parse_date,
+        csrf_token=csrf_token, settings=settings, vault=vault, receipt_of=receipt_of, issuer_for=issuer_for,
+        recent_failures=recent_failures, receipt_json=receipt_json, PUBLIC_HEADERS=PUBLIC_HEADERS,
+        insecure_secret=insecure_secret, BOOKS=BOOKS, reports_parties=reports_parties))
+    serve_spa(app)
     return app
+
+
+SPA_DIR = HERE / "spa"
+SPA_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                               "img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; "
+                               "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; "
+                               "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+}
+
+
+def serve_spa(app: FastAPI) -> None:
+    """The built React app (frontend/ -> loan_tracker/web/spa). Any path that is not an API
+    or file route gets index.html, so the browser's router can show the screen. Borrower
+    links (/s/...) also get no-store and noindex."""
+    index = SPA_DIR / "index.html"
+    if (SPA_DIR / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=SPA_DIR / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        if path.startswith("api/") or not index.exists():
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        headers = dict(SPA_HEADERS)
+        headers["Cache-Control"] = "no-cache"
+        if path.startswith("s/"):
+            headers.update({"Cache-Control": "no-store, private", "X-Robots-Tag": "noindex, nofollow"})
+        return Response(index.read_bytes(), media_type="text/html", headers=headers)
 
 
 # ---------------------------------------------------------------- helpers
