@@ -1239,8 +1239,8 @@ def funding_links(s: Session) -> list[m.FundingLink]:
 
 
 # ------------------------------------------------------------------ phones (Android app)
-DEVICE_IDLE_DAYS = 90            # a phone not used for this long must sign in again
-DEVICE_TOUCH_MINUTES = 60        # "last used" is written at most this often
+DEVICE_IDLE_DAYS = 90            # longest a phone may stay signed in unused (APP_IDLE_MINUTES is usually far less)
+DEVICE_TOUCH_SECONDS = 60        # "last used" is written at most this often
 
 
 def _device_hash(token: str) -> str:
@@ -1260,38 +1260,53 @@ def create_device(s: Session, user: m.AppUser, name: str, now) -> tuple[m.AppDev
     return d, token
 
 
-def resolve_device(s: Session, token: str, now) -> m.AppDevice | None:
-    """The live device for a bearer token, or None (unknown, signed out, idle too long,
-    user disabled, or password reset since sign-in)."""
+def _idle_limit(idle):
+    from datetime import timedelta as _td
+    cap = _td(days=DEVICE_IDLE_DAYS)
+    return cap if idle is None else min(idle, cap)
+
+
+def resolve_device(s: Session, token: str, now, idle=None) -> tuple[m.AppDevice | None, str | None]:
+    """The live device for a bearer token and None, or None and why not: "unknown",
+    "signed_out", "elsewhere" (password reset, user disabled, or a newer sign-in with
+    SINGLE_SESSION) or "idle" (unused longer than `idle`: it must sign in again)."""
     from datetime import timedelta as _td
     import re as _re
     if not token or len(token) > 100 or not _re.fullmatch(r"ld_[A-Za-z0-9_-]+", token):
-        return None
+        return None, "unknown"
     d = s.scalar(select(m.AppDevice).where(m.AppDevice.token_hash == _device_hash(token)))
-    if d is None or d.revoked_at is not None:
-        return None
+    if d is None:
+        return None, "unknown"
+    if d.revoked_at is not None:
+        return None, "signed_out"
     u = d.user
     if u.disabled_at is not None or u.session_epoch != d.session_epoch:
-        return None
+        return None, "elsewhere"
     last = d.last_used_at or d.created_at
-    if now - last > _td(days=DEVICE_IDLE_DAYS):
-        return None
-    if now - last > _td(minutes=DEVICE_TOUCH_MINUTES):
+    if now - last > _idle_limit(idle):         # stays refused: nothing touches an idle phone again
+        return None, "idle"
+    if now - last > _td(seconds=DEVICE_TOUCH_SECONDS):
         d.last_used_at = now
         s.flush()
-    return d
+    return d, None
 
 
-def resolve_device_state(d: m.AppDevice, now) -> str:
-    """LIVE, SIGNED_OUT, ENDED (password reset / user disabled) or IDLE (unused too long)."""
-    from datetime import timedelta as _td
+
+def resolve_device_state(d: m.AppDevice, now, idle=None) -> str:
+    """LIVE, SIGNED_OUT, ENDED (password reset / user disabled / signed in elsewhere) or IDLE."""
     if d.revoked_at is not None:
         return "SIGNED_OUT"
     if d.user.disabled_at is not None or d.user.session_epoch != d.session_epoch:
         return "ENDED"
-    if now - (d.last_used_at or d.created_at) > _td(days=DEVICE_IDLE_DAYS):
+    if now - (d.last_used_at or d.created_at) > _idle_limit(idle):
         return "IDLE"
     return "LIVE"
+
+
+def end_other_sign_ins(s: Session, user: m.AppUser) -> None:
+    """SINGLE_SESSION: a new sign-in ends this user's other browser sessions and phones."""
+    user.session_epoch += 1
+    s.flush()
 
 
 def list_devices(s: Session, user_id: int | None = None) -> list[m.AppDevice]:

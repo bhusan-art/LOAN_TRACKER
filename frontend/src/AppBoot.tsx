@@ -26,7 +26,7 @@ export function AppBoot({ children }: { children: ReactNode }) {
   }, []);
   if (state === "loading") return <Loading label="Starting…" />;
   if (state === "setup") {
-    return <AppSetup current={server} onSaved={async (url) => {
+    return <AppSetup current={server} onCancel={server ? () => setState("ready") : undefined} onSaved={async (url) => {
       if (url !== server) await setToken(null);              // a different server: sign in again
       await setServer(url);
       setServerState(url);
@@ -34,5 +34,15 @@ export function AppBoot({ children }: { children: ReactNode }) {
       window.location.replace("/login");
     }} />;
   }
-  return <>{children}</>;
+  return (
+    <>
+      {isNative && (
+        // edge-to-edge phones draw the page under the status bar: paint that strip deep teal,
+        // the same colour Capacitor's padding shows on other phones
+        <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 z-[600] bg-deep"
+          style={{ height: "var(--sat)" }} />
+      )}
+      {children}
+    </>
+  );
 }

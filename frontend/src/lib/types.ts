@@ -15,6 +15,9 @@ export interface SessionInfo {
   documents_ok?: boolean;
   documents_problem?: string | null;
   public_url?: string | null;
+  device_id?: number | null;
+  ended?: string | null;          // why the last sign-in ended (shown on the sign-in screen)
+  idle_minutes?: number;          // sign out after this long without use
 }
 
 export interface Message {

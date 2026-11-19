@@ -13,6 +13,11 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Capacitor pads the screen by the status bar and gesture bar and that padding
+             shows this colour: Ledgerly's deep teal instead of a white strip. -->
+        <item name="android:windowBackground">@color/ledgerly_deep</item>
+        <item name="android:statusBarColor">@color/ledgerly_deep</item>
+        <item name="android:navigationBarColor">@color/ledgerly_deep</item>
     </style>
 
 

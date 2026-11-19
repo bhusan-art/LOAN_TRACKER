@@ -132,6 +132,12 @@ browser to install apps when Android asks, and install. Open **Ledgerly**, enter
 address from step 1 and sign in with your password and authenticator code.
 *Settings* in the app: fingerprint lock and due reminders.
 
+**Sign-in safety (website and app).** After 30 minutes without use you are signed out and
+the sign-in screen says why; a browser sign-in also ends after 12 hours. Only one sign-in per
+user is kept: signing in on the phone signs that user out of the browser and any other phone,
+and the other way round. Change these in `.env` (`SESSION_IDLE_MINUTES`, `APP_IDLE_MINUTES`,
+`SESSION_MAX_HOURS`, `SINGLE_SESSION=0` to allow several sign-ins) and restart the app.
+
 **A lost phone:** in Ledgerly on the PC open *Settings → Phones with the Ledgerly app →
 Sign out*, or run `python -m loan_tracker.cli list-devices` and
 `python -m loan_tracker.cli revoke-device <id>`. A password reset signs out every phone.

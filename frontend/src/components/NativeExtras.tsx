@@ -7,6 +7,7 @@ import { getFlag, isNative, scheduleDueReminders, unlock } from "../lib/native";
 import type { CalendarPage } from "../lib/types";
 import { useSession } from "../lib/session";
 import { Icon } from "./Icon";
+import { idleExpired } from "./IdleSignOut";
 
 const LOCK_AFTER_MS = 30_000;          // back from the background after this long -> unlock again
 
@@ -24,7 +25,9 @@ function AppLock() {
 
   useEffect(() => {
     let off: (() => void) | undefined;
+    let gone = false;                       // the screen closed before setup finished
     (async () => {
+      if (gone) return;
       if (await getFlag("lock", false)) {
         setLocked(true);
         tryUnlock();
@@ -37,14 +40,15 @@ function AppLock() {
         }
         const away = hiddenAt.current ? Date.now() - hiddenAt.current : 0;
         hiddenAt.current = null;
-        if (away >= LOCK_AFTER_MS && (await getFlag("lock", false))) {
+        if (away >= LOCK_AFTER_MS && !idleExpired() && (await getFlag("lock", false))) {
           setLocked(true);
           tryUnlock();
         }
       });
-      off = () => h.remove();
+      if (gone) h.remove();
+      else off = () => h.remove();
     })();
-    return () => off?.();
+    return () => { gone = true; off?.(); };
   }, []);
 
   if (!locked) return null;
@@ -64,6 +68,7 @@ function AppLock() {
 function BackButton() {
   useEffect(() => {
     let off: (() => void) | undefined;
+    let gone = false;
     (async () => {
       const { App } = await import("@capacitor/app");
       const h = await App.addListener("backButton", ({ canGoBack }) => {
@@ -72,9 +77,10 @@ function BackButton() {
         else if (canGoBack && window.location.pathname !== "/") window.history.back();
         else App.minimizeApp();
       });
-      off = () => h.remove();
+      if (gone) h.remove();
+      else off = () => h.remove();
     })();
-    return () => off?.();
+    return () => { gone = true; off?.(); };
   }, []);
   return null;
 }
@@ -83,11 +89,9 @@ function BackButton() {
 function Reminders() {
   const { session } = useSession();
   const nav = useNavigate();
-  const [on, setOn] = useState<boolean | null>(null);
-  useEffect(() => { getFlag("remind", true).then(setOn); }, []);
   // every book, whatever the screen shows, so no due is missed
   const cal = useQuery({
-    queryKey: ["reminder-calendar"], enabled: !!session?.user && on === true, staleTime: 10 * 60_000,
+    queryKey: ["reminder-calendar"], enabled: !!session?.user, staleTime: 10 * 60_000,
     queryFn: () => api<CalendarPage>("/api/ui/calendar?days=30&book=all"),
   });
   useEffect(() => {
@@ -98,17 +102,22 @@ function Reminders() {
       outPaise: d.money_out.reduce((a, i) => a + i.amount_paise, 0),
       people: [...new Set([...d.money_in, ...d.money_out].map((i) => i.party))],
     }));
-    scheduleDueReminders(days, (p) => inr(p, false)).catch(() => {});
-  }, [cal.data]);
+    // the switch in Settings is read each time, so turning it on or off applies at once
+    getFlag("remind", true).then((on) => (on ? scheduleDueReminders(days, (p) => inr(p, false)) : null)).catch(() => {});
+    // dataUpdatedAt changes on every refetch, even when the data is the same (Settings switch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cal.dataUpdatedAt]);
   // tapping a reminder opens the cash calendar
   useEffect(() => {
     let off: (() => void) | undefined;
+    let gone = false;
     (async () => {
       const { LocalNotifications } = await import("@capacitor/local-notifications");
       const h = await LocalNotifications.addListener("localNotificationActionPerformed", () => nav("/calendar"));
-      off = () => h.remove();
+      if (gone) h.remove();
+      else off = () => h.remove();
     })();
-    return () => off?.();
+    return () => { gone = true; off?.(); };
   }, [nav]);
   return null;
 }

@@ -244,8 +244,11 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
     def api_session(request: Request, s: Session = Depends(db)):
         """Who is logged in, plus the CSRF token every non-GET /api call must send back."""
         u = h.who(request, s)
+        device = getattr(request.state, "device_id", None) if u is not None else None
         out = {"csrf": h.csrf_token(request), "user": None, "today": J(today()), "book": h.book_of(request),
-               "timezone": settings.timezone, "device_id": getattr(request.state, "device_id", None)}
+               "timezone": settings.timezone, "device_id": device,
+               "ended": h.ENDED_MESSAGES.get(request.state.ended) if u is None else None,
+               "idle_minutes": settings.app_idle_minutes if device else settings.session_idle_minutes}
         if u is not None:
             overdue = s.scalar(select(func.count()).select_from(m.Loan).where(m.Loan.status == "OVERDUE")) or 0
             out.update(user=u.username, role=u.role, nav_overdue=overdue, insecure_secret=h.insecure_secret,
@@ -279,8 +282,11 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
         u = check_login(request, payload, s)
         if isinstance(u, JSONResponse):
             return u
+        if settings.single_session:
+            svc.end_other_sign_ins(s, u)
         d, token = svc.create_device(s, u, payload.device_name, datetime.now(timezone.utc))
-        h.log(request, s, "DEVICE_SIGNED_IN", "app_device", d.id, actor=u.username, name=d.name, role=u.role)
+        h.log(request, s, "DEVICE_SIGNED_IN", "app_device", d.id, actor=u.username, name=d.name, role=u.role,
+              note="other sign-ins ended" if settings.single_session else None)
         return {"token": token, "device_id": d.id, "user": u.username, "role": u.role}
 
     @app.post("/api/device/logout")
@@ -298,9 +304,10 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
         me = s.scalar(select(m.AppUser).where(m.AppUser.username == username))
         rows = svc.list_devices(s, None if request.state.role == "OWNER" else me.id)
         now = datetime.now(timezone.utc)
+        idle = timedelta(minutes=settings.app_idle_minutes)
         return [{"id": d.id, "name": d.name, "user": d.user.username, "created_at": J(d.created_at),
                  "last_used_at": J(d.last_used_at), "revoked_at": J(d.revoked_at),
-                 "live": svc.resolve_device_state(d, now) == "LIVE", "state": svc.resolve_device_state(d, now),
+                 "live": svc.resolve_device_state(d, now, idle) == "LIVE", "state": svc.resolve_device_state(d, now, idle),
                  "current": d.id == getattr(request.state, "device_id", None)} for d in rows]
 
     @app.post("/api/devices/{device_id}/revoke")
@@ -315,10 +322,14 @@ def register(app: FastAPI, h: SimpleNamespace) -> None:
         u = check_login(request, payload, s)
         if isinstance(u, JSONResponse):
             return u
+        if settings.single_session:
+            svc.end_other_sign_ins(s, u)
         request.session.clear()            # new session on login (prevents session fixation)
         request.session["user"] = u.username
         request.session["epoch"] = u.session_epoch
-        h.log(request, s, "LOGIN_OK", "app_user", u.id, role=u.role)
+        request.session["start"] = request.session["seen"] = time.time()
+        h.log(request, s, "LOGIN_OK", "app_user", u.id, role=u.role,
+              note="other sign-ins ended" if settings.single_session else None)
         return {"user": u.username, "role": u.role, "csrf": h.csrf_token(request)}
 
     @app.post("/api/logout")

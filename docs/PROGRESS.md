@@ -149,3 +149,10 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - App: server address (https only), fingerprint lock, due reminders, share sheet for files, back button; no backups.
 - Tests: 299 pytest (10 new), 10 Vitest, web click-through 73/73, app mode from another origin 19/19.
 - Not run here: the Gradle/APK build itself (Android servers blocked in this workspace) - first run is on GitHub.
+
+## App fixes (branch app-fixes)
+- App: white strips at the status/gesture bars (Capacitor padding showed the theme's white window) -> deep-teal bars, light icons; safe areas now add to padding instead of replacing it (web pages had lost their bottom padding).
+- Sign-out after 30 min without use (server + screen timer, keep-alive while reading), 12 h max browser session; reason shown on sign-in.
+- One sign-in per user (SINGLE_SESSION): a new sign-in ends the user's other browsers and phones.
+- Review fixes: double sign-out requests, sign-in screen bouncing back after sign-out, app sign-in race, "Change server" had no cancel, reminders switch only applied after restart, listener leaks, CLI idle state.
+- Tests: 302 pytest, 10 Vitest, web click-through 80/80, app mode 24/24.
