@@ -22,7 +22,7 @@ funds which loan, and a daily Telegram/email digest of what to pay and collect.
    ```
 2. `create-user` asks for a password and prints a **setup key**. Add it in Google
    Authenticator / Microsoft Authenticator / Aegis ("enter a setup key").
-3. Open **http://localhost:8000** (or the `APP_PORT` you set in `.env`) and log in with the
+3. Open **http://localhost:8765** (or the `APP_PORT` you set in `.env`) and log in with the
    password and the 6-digit code.
 
    Port already in use? Set `APP_PORT` (and `DB_PORT` if 5432 is taken) in `.env`, then
@@ -82,7 +82,7 @@ when the job last ran.
 ## 4. Use it from your phone
 
 - **Easiest and private:** install [Tailscale](https://tailscale.com) on the PC/server and
-  your phone, then open `http://<machine-name>:8000`. Nothing is exposed to the internet.
+  your phone, then open `http://<machine-name>:8765`. Nothing is exposed to the internet.
 - **On a server with a domain:** run the same `docker compose` there, put
   `deploy/Caddyfile` in front for HTTPS, and set `SECURE_COOKIES=1`.
 
@@ -101,9 +101,9 @@ notifications and Android's share sheet for documents and receipts. It talks to 
 Tailscale, so nothing is opened to the internet.
 
 **1. Give the PC an https address (once).** In the Tailscale admin console turn on
-*DNS → HTTPS Certificates*. Then on the PC (with Ledgerly running on port 8000):
+*DNS → HTTPS Certificates*. Then on the PC (with Ledgerly running on port 8765):
 ```powershell
-tailscale serve --bg 8000
+tailscale serve --bg 8765
 ```
 Tailscale prints the address, like `https://my-pc.tail1234.ts.net`. Open it in the phone's
 browser (Tailscale on) to check that the login page appears. The app only accepts https.
@@ -179,12 +179,12 @@ python -m venv .venv ; .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 docker compose up -d db
 python -m loan_tracker.cli migrate
-uvicorn loan_tracker.web.app:app --reload      # API on http://127.0.0.1:8000
+uvicorn loan_tracker.web.app:app --reload      # API on http://127.0.0.1:8765
 
 cd frontend
 npm ci
 npm run dev                                    # screens on http://127.0.0.1:5173 (calls the API above)
-npm run build                                  # writes loan_tracker/web/spa; then port 8000 serves everything
+npm run build                                  # writes loan_tracker/web/spa; then port 8765 serves everything
 ```
 
 Tests (engine tests need nothing; database tests need an empty test database):
