@@ -164,3 +164,10 @@ Deferred ideas: application/approval workflow, official WhatsApp API.
 - Android: doubled teal band under the status bar fixed (SystemBars insetsHandling native, no viewport-fit=cover).
 - App start (Android and Windows) always ends the previous sign-in and asks for the password.
 - Tests: 303 pytest, 10 Vitest, web 80/80, phone mode 26/26, Windows mode 15/15. MSI/Rust build not run here (first run on GitHub).
+
+## Linux server deploy (branch linux-server)
+- deploy/server.sh: install (Docker, Tailscale https serve, random .env, firewall, unattended upgrades, nightly backup cron),
+  update, status, create-user, backup, logs, import (Windows dump: strips BOM/CRLF, copies documents, backs up first).
+- Proxmox: VM (not LXC) recommended, Debian/Ubuntu; README "Linux server" section; .env.example BACKUP_PASSPHRASE.
+- backup.sh reads only BACKUP_PASSPHRASE from .env (sourcing the whole file broke on values with spaces).
+- Checked: shellcheck clean, .env generation, Windows-style dump import gives identical data. Not run here: a real VM install.

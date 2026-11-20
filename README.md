@@ -159,10 +159,66 @@ Sign out*, or run `python -m loan_tracker.cli list-devices` and
 `python -m loan_tracker.cli revoke-device <id>`. A password reset signs out every phone.
 Phones unused for 90 days must sign in again.
 
+### Linux server (Proxmox VM) - for everyday use
+
+Run Ledgerly on a small always-on Linux VM instead of the Windows PC. Use a **VM, not an
+LXC container**: Docker inside LXC needs nesting and breaks on some Proxmox updates, and
+Tailscale needs extra device access there. A VM just works and Proxmox can back it up whole.
+
+**1. Create the VM in Proxmox.** ISO: Debian 12/13 netinst (or Ubuntu Server 24.04).
+2 vCPU, 4 GB RAM (the first build needs it; 2 GB is enough afterwards), 32 GB disk on
+VirtIO SCSI, *Qemu Agent* ticked, *Start at boot* on. Name it `ledgerly` - that becomes the
+address `https://ledgerly.<your-tailnet>.ts.net`. In the installer tick only *SSH server*
+and *standard system utilities*.
+
+**2. Install (as your user, over SSH):**
+```bash
+sudo apt install -y git
+sudo git clone https://github.com/bhusan-art/LOAN_TRACKER.git /opt/loan_tracker
+cd /opt/loan_tracker
+sudo ./deploy/server.sh install
+```
+(Private repository: GitHub asks for your username and a personal access token as the
+password, *Settings -> Developer settings -> Fine-grained tokens*, read-only "Contents".)
+
+The script installs Docker and Tailscale, writes `.env` with random passwords, builds and
+starts the app on port 8765 (localhost only), gives it a Tailscale https address, turns on
+the firewall (SSH and Tailscale only), security updates and a nightly encrypted backup at
+02:30. It asks you to sign in to Tailscale once (open the link it prints). At the end it shows
+`DOCUMENT_KEY` and `BACKUP_PASSPHRASE`: **put both in your password manager.**
+
+**3a. Starting fresh:** `sudo ./deploy/server.sh create-user owner`
+
+**3b. Moving your data from the Windows PC:**
+1. When `install` asks, paste the `DOCUMENT_KEY` from the Windows `.env` (documents only
+   open with the same key). Already installed? Put it in `/opt/loan_tracker/.env` and run
+   `sudo docker compose up -d`.
+2. On Windows run `deploy\backup.ps1`, then copy the newest `loan_tracker_*.sql(.7z)` and
+   `loan_tracker_docs_*` from `backups` to the VM (`scp` or WinSCP), e.g. into `/tmp`.
+3. `sudo ./deploy/server.sh import /tmp/loan_tracker_STAMP.sql.7z /tmp/loan_tracker_docs_STAMP.7z`
+   (asks for the 7-Zip password, then replaces the server's data; users, loans, history and
+   documents come across).
+4. Stop Ledgerly on Windows (`docker compose down`) so nobody enters data in the old copy.
+
+**4. Phone and Windows apps:** *Settings -> Change server ->* the new https address, sign in.
+Browsers: open the same address (Tailscale on).
+
+**Later:**
+| What | Command (in `/opt/loan_tracker`) |
+|---|---|
+| Update after merging on GitHub | `sudo ./deploy/server.sh update` |
+| Is it healthy? address? last backup? | `sudo ./deploy/server.sh status` |
+| Backup now | `sudo ./deploy/server.sh backup` |
+| App logs | `sudo ./deploy/server.sh logs` |
+
+Backups land in `/opt/loan_tracker/backups` **on the same disk**: also schedule a Proxmox
+backup of the VM (*Datacenter -> Backup*, to another disk or a Proxmox Backup Server) and/or
+copy `backups/` offsite.
+
 ## 5. Backups (do this)
 
 - Windows: schedule `deploy\backup.ps1` daily in Task Scheduler (7-Zip + `BACKUP_PASSPHRASE` encrypts it).
-- Linux server: cron `deploy/backup.sh` (gpg-encrypted, keeps 60 days).
+- Linux server: `deploy/server.sh install` sets up `deploy/backup.sh` nightly (gpg-encrypted, keeps 60 days).
 - Both scripts back up the database **and** the documents folder.
 - Copy the `backups` folder **offsite**, and test a restore once a month (commands are inside the scripts).
 - Keep `DOCUMENT_KEY` (and `BACKUP_PASSPHRASE`) in your password manager, not only in `.env`:

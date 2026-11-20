@@ -1,11 +1,14 @@
 #!/usr/bin/env sh
 # Nightly encrypted backup (Linux server). Cron example, 02:30 every night:
 #   30 2 * * * cd /opt/loan_tracker && ./deploy/backup.sh >> backups/backup.log 2>&1
-# Needs BACKUP_PASSPHRASE in the environment (or .env). Copy backups/ offsite
+# Needs BACKUP_PASSPHRASE in the environment or in .env (deploy/server.sh install sets it). Copy backups/ offsite
 # (rclone, rsync to another machine) — a backup on the same disk is not a backup.
 set -eu
 cd "$(dirname "$0")/.."
-[ -f .env ] && . ./.env
+# read only this one value: sourcing all of .env breaks on values with spaces
+if [ -z "${BACKUP_PASSPHRASE:-}" ] && [ -f .env ]; then
+  BACKUP_PASSPHRASE=$(sed -n 's/^BACKUP_PASSPHRASE=//p' .env | tail -1)
+fi
 : "${BACKUP_PASSPHRASE:?set BACKUP_PASSPHRASE}"
 mkdir -p backups
 stamp=$(date +%Y-%m-%d_%H%M)
